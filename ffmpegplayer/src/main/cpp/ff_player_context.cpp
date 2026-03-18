@@ -1,0 +1,859 @@
+#include "ff_player_context.h"
+#include <android/log.h>
+#include <unistd.h>
+
+#define LOG_TAG "FFPlayerContext"
+#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+
+FFPlayerContext::FFPlayerContext(JavaVM *javaVM, jobject javaPlayer)
+    : javaVM_(javaVM) {
+    JNIEnv *env = getJNIEnv();
+    if (env) {
+        javaPlayer_ = env->NewGlobalRef(javaPlayer);
+    }
+}
+
+FFPlayerContext::~FFPlayerContext() {
+    release();
+}
+
+JNIEnv* FFPlayerContext::getJNIEnv() {
+    JNIEnv *env = nullptr;
+    if (javaVM_) {
+        int status = javaVM_->GetEnv((void**)&env, JNI_VERSION_1_6);
+        if (status == JNI_EDETACHED) {
+            javaVM_->AttachCurrentThread(&env, nullptr);
+        }
+    }
+    return env;
+}
+
+void FFPlayerContext::detachThread() {
+    if (javaVM_) {
+        javaVM_->DetachCurrentThread();
+    }
+}
+
+// ==================== Playback Control ====================
+
+int FFPlayerContext::prepare(const std::string &path) {
+    FFPlayerState curState = state_.load();
+    if (curState != FFPlayerState::IDLE && curState != FFPlayerState::STOPPED) {
+        LOGE("prepare: invalid state: %d", (int)curState);
+        return -1;
+    }
+
+    // If re-preparing from STOPPED state, release old resources first
+    if (curState == FFPlayerState::STOPPED) {
+        if (videoDecoder_) {
+            videoDecoder_->release();
+            delete videoDecoder_;
+            videoDecoder_ = nullptr;
+        }
+        if (audioDecoder_) {
+            audioDecoder_->release();
+            delete audioDecoder_;
+            audioDecoder_ = nullptr;
+        }
+        if (demuxer_) {
+            demuxer_->close();
+            delete demuxer_;
+            demuxer_ = nullptr;
+        }
+        if (avSync_) {
+            delete avSync_;
+            avSync_ = nullptr;
+        }
+        if (bsfCtx_) {
+            av_bsf_free(&bsfCtx_);
+            bsfCtx_ = nullptr;
+        }
+    }
+
+    state_.store(FFPlayerState::PREPARING);
+    notifyStateChanged((int)FFPlayerState::PREPARING);
+
+    // Create demuxer
+    demuxer_ = new FFDemuxer();
+    int ret = demuxer_->open(path.c_str());
+    if (ret < 0) {
+        LOGE("Failed to open file: %s", path.c_str());
+        notifyError(-1, "Failed to open file");
+        state_.store(FFPlayerState::ERROR);
+        return ret;
+    }
+
+    // Create AV sync
+    avSync_ = new FFAVSync();
+
+    // Create video decoder
+    {
+        std::lock_guard<std::mutex> lock(surfaceMutex_);
+        if (nativeWindow_ && demuxer_->getVideoStreamIndex() >= 0) {
+            videoDecoder_ = new FFVideoDecoder();
+            ret = videoDecoder_->init(demuxer_->getVideoCodecParams(), nativeWindow_);
+            if (ret < 0) {
+                LOGE("Video decoder init failed");
+                delete videoDecoder_;
+                videoDecoder_ = nullptr;
+            }
+        }
+    }
+
+    // Init H.264/HEVC bitstream filter (AVCC → AnnexB), MediaCodec requires AnnexB format
+    if (demuxer_->getVideoStreamIndex() >= 0) {
+        AVCodecParameters *vpar = demuxer_->getVideoCodecParams();
+        const char *bsfName = nullptr;
+        if (vpar->codec_id == AV_CODEC_ID_H264) {
+            bsfName = "h264_mp4toannexb";
+        } else if (vpar->codec_id == AV_CODEC_ID_HEVC) {
+            bsfName = "hevc_mp4toannexb";
+        }
+        if (bsfName) {
+            const AVBitStreamFilter *bsf = av_bsf_get_by_name(bsfName);
+            if (bsf) {
+                ret = av_bsf_alloc(bsf, &bsfCtx_);
+                if (ret >= 0) {
+                    avcodec_parameters_copy(bsfCtx_->par_in, vpar);
+                    bsfCtx_->time_base_in = demuxer_->getVideoTimeBase();
+                    ret = av_bsf_init(bsfCtx_);
+                    if (ret < 0) {
+                        LOGE("Bitstream filter init failed: %d", ret);
+                        av_bsf_free(&bsfCtx_);
+                        bsfCtx_ = nullptr;
+                    } else {
+                        LOGD("Bitstream filter [%s] initialized successfully", bsfName);
+                    }
+                }
+            } else {
+                LOGE("Bitstream filter not found: %s", bsfName);
+            }
+        }
+    }
+
+    // Create audio decoder
+    if (demuxer_->getAudioStreamIndex() >= 0) {
+        audioDecoder_ = new FFAudioDecoder();
+        ret = audioDecoder_->init(demuxer_->getAudioCodecParams());
+        if (ret < 0) {
+            LOGE("Audio decoder init failed");
+            delete audioDecoder_;
+            audioDecoder_ = nullptr;
+        }
+    }
+
+    state_.store(FFPlayerState::PREPARED);
+    notifyStateChanged((int)FFPlayerState::PREPARED);
+    notifyPrepared();
+
+    if (videoDecoder_) {
+        notifyVideoSizeChanged(demuxer_->getWidth(), demuxer_->getHeight());
+    }
+
+    LOGI("Prepare done: duration=%lldms, video=%dx%d, fps=%.1f",
+         (long long)(demuxer_->getDurationUs() / 1000),
+         demuxer_->getWidth(), demuxer_->getHeight(),
+         demuxer_->getVideoFps());
+
+    return 0;
+}
+
+int FFPlayerContext::prepareWithFd(int fd) {
+    FFPlayerState curState = state_.load();
+    if (curState != FFPlayerState::IDLE && curState != FFPlayerState::STOPPED) {
+        return -1;
+    }
+
+    // If re-preparing from STOPPED state, release old resources first
+    if (curState == FFPlayerState::STOPPED) {
+        if (videoDecoder_) { videoDecoder_->release(); delete videoDecoder_; videoDecoder_ = nullptr; }
+        if (audioDecoder_) { audioDecoder_->release(); delete audioDecoder_; audioDecoder_ = nullptr; }
+        if (demuxer_) { demuxer_->close(); delete demuxer_; demuxer_ = nullptr; }
+        if (avSync_) { delete avSync_; avSync_ = nullptr; }
+        if (bsfCtx_) { av_bsf_free(&bsfCtx_); bsfCtx_ = nullptr; }
+    }
+
+    state_.store(FFPlayerState::PREPARING);
+    notifyStateChanged((int)FFPlayerState::PREPARING);
+
+    demuxer_ = new FFDemuxer();
+    int ret = demuxer_->openFd(fd);
+    if (ret < 0) {
+        notifyError(-1, "Failed to open file via fd");
+        state_.store(FFPlayerState::ERROR);
+        return ret;
+    }
+
+    avSync_ = new FFAVSync();
+
+    {
+        std::lock_guard<std::mutex> lock(surfaceMutex_);
+        if (nativeWindow_ && demuxer_->getVideoStreamIndex() >= 0) {
+            videoDecoder_ = new FFVideoDecoder();
+            ret = videoDecoder_->init(demuxer_->getVideoCodecParams(), nativeWindow_);
+            if (ret < 0) {
+                delete videoDecoder_;
+                videoDecoder_ = nullptr;
+            }
+        }
+    }
+
+    // Init bitstream filter (same as prepare method)
+    if (demuxer_->getVideoStreamIndex() >= 0) {
+        AVCodecParameters *vpar = demuxer_->getVideoCodecParams();
+        const char *bsfName = nullptr;
+        if (vpar->codec_id == AV_CODEC_ID_H264) {
+            bsfName = "h264_mp4toannexb";
+        } else if (vpar->codec_id == AV_CODEC_ID_HEVC) {
+            bsfName = "hevc_mp4toannexb";
+        }
+        if (bsfName) {
+            const AVBitStreamFilter *bsf = av_bsf_get_by_name(bsfName);
+            if (bsf) {
+                ret = av_bsf_alloc(bsf, &bsfCtx_);
+                if (ret >= 0) {
+                    avcodec_parameters_copy(bsfCtx_->par_in, vpar);
+                    bsfCtx_->time_base_in = demuxer_->getVideoTimeBase();
+                    ret = av_bsf_init(bsfCtx_);
+                    if (ret < 0) {
+                        av_bsf_free(&bsfCtx_);
+                        bsfCtx_ = nullptr;
+                    }
+                }
+            }
+        }
+    }
+
+    if (demuxer_->getAudioStreamIndex() >= 0) {
+        audioDecoder_ = new FFAudioDecoder();
+        ret = audioDecoder_->init(demuxer_->getAudioCodecParams());
+        if (ret < 0) {
+            delete audioDecoder_;
+            audioDecoder_ = nullptr;
+        }
+    }
+
+    state_.store(FFPlayerState::PREPARED);
+    notifyStateChanged((int)FFPlayerState::PREPARED);
+    notifyPrepared();
+
+    if (videoDecoder_) {
+        notifyVideoSizeChanged(demuxer_->getWidth(), demuxer_->getHeight());
+    }
+
+    return 0;
+}
+
+void FFPlayerContext::start() {
+    FFPlayerState expected = FFPlayerState::PREPARED;
+    if (!state_.compare_exchange_strong(expected, FFPlayerState::PLAYING)) {
+        // Also allow starting from PAUSED state
+        expected = FFPlayerState::PAUSED;
+        if (!state_.compare_exchange_strong(expected, FFPlayerState::PLAYING)) {
+            LOGE("start: invalid state %d", (int)state_.load());
+            return;
+        }
+        // Resume from pause
+        resume();
+        return;
+    }
+
+    abortRequest_.store(false);
+    notifyStateChanged((int)FFPlayerState::PLAYING);
+
+    // Start read thread
+    readThread_ = std::thread(&FFPlayerContext::readThreadFunc, this);
+
+    // Start video decode thread
+    if (videoDecoder_) {
+        videoThread_ = std::thread(&FFPlayerContext::videoThreadFunc, this);
+    }
+
+    // Start audio decode thread
+    if (audioDecoder_) {
+        audioThread_ = std::thread(&FFPlayerContext::audioThreadFunc, this);
+    }
+
+    LOGI("Playback started");
+}
+
+void FFPlayerContext::pause() {
+    FFPlayerState expected = FFPlayerState::PLAYING;
+    if (!state_.compare_exchange_strong(expected, FFPlayerState::PAUSED)) {
+        return;
+    }
+
+    if (audioDecoder_) {
+        audioDecoder_->pause();
+    }
+
+    notifyStateChanged((int)FFPlayerState::PAUSED);
+    LOGI("Playback paused");
+}
+
+void FFPlayerContext::resume() {
+    FFPlayerState expected = FFPlayerState::PAUSED;
+    if (!state_.compare_exchange_strong(expected, FFPlayerState::PLAYING)) {
+        return;
+    }
+
+    if (audioDecoder_) {
+        audioDecoder_->resume();
+    }
+
+    notifyStateChanged((int)FFPlayerState::PLAYING);
+    LOGI("Playback resumed");
+}
+
+void FFPlayerContext::stop() {
+    FFPlayerState curState = state_.load();
+    if (curState == FFPlayerState::STOPPED || curState == FFPlayerState::IDLE) {
+        return;
+    }
+
+    LOGI("Stopping playback, current state: %d", (int)curState);
+    
+    // Set abort flag
+    abortRequest_.store(true);
+    
+    // Notify queues to stop
+    videoQueue_.abort();
+    audioQueue_.abort();
+    
+    // Wait for threads to finish
+    auto joinThread = [](std::thread& thread, const char* threadName) {
+        if (thread.joinable()) {
+            LOGI("Waiting for %s thread to finish", threadName);
+            thread.join();
+            LOGI("%s thread finished", threadName);
+        }
+    };
+
+    joinThread(readThread_, "read");
+    joinThread(videoThread_, "video");
+    joinThread(audioThread_, "audio");
+
+    // Flush queues
+    videoQueue_.flush();
+    audioQueue_.flush();
+
+    state_.store(FFPlayerState::STOPPED);
+    notifyStateChanged((int)FFPlayerState::STOPPED);
+    LOGI("Playback stopped");
+}
+
+void FFPlayerContext::seekTo(int64_t positionMs) {
+    seekPositionUs_.store(positionMs * 1000);
+    seekRequest_.store(true);
+    LOGI("Seek to %lld ms", (long long)positionMs);
+}
+
+void FFPlayerContext::reset() {
+    LOGI("Resetting player state");
+    
+    // Stop current playback (waits for all threads to exit)
+    stop();
+    
+    // Reset all state variables
+    abortRequest_.store(false);
+    seekRequest_.store(false);
+    seekPositionUs_.store(0);
+    
+    // Flush and reset queue state
+    videoQueue_.flush();
+    audioQueue_.flush();
+    
+    // Seek demuxer to beginning
+    if (demuxer_) {
+        demuxer_->seek(0);
+    }
+    
+    // Reset video decoder (flush MediaCodec and reset EOS state)
+    if (videoDecoder_) {
+        videoDecoder_->flush();
+    }
+    
+    // Reset audio decoder (flush FFmpeg decoder, clear OpenSL ES buffer queue, reset clock)
+    if (audioDecoder_) {
+        audioDecoder_->flush();
+    }
+    
+    // Reset sync manager
+    if (avSync_) {
+        avSync_->reset();
+    }
+    
+    // Reset state to PREPARED so start() can be called directly
+    state_.store(FFPlayerState::PREPARED);
+    notifyStateChanged((int)FFPlayerState::PREPARED);
+    
+    LOGI("Player reset complete, state set to PREPARED");
+}
+
+void FFPlayerContext::release() {
+    if (state_.load() == FFPlayerState::PLAYING || state_.load() == FFPlayerState::PAUSED) {
+        stop();
+    }
+
+    if (videoDecoder_) {
+        videoDecoder_->release();
+        delete videoDecoder_;
+        videoDecoder_ = nullptr;
+    }
+
+    if (audioDecoder_) {
+        audioDecoder_->release();
+        delete audioDecoder_;
+        audioDecoder_ = nullptr;
+    }
+
+    if (demuxer_) {
+        demuxer_->close();
+        delete demuxer_;
+        demuxer_ = nullptr;
+    }
+
+    if (avSync_) {
+        delete avSync_;
+        avSync_ = nullptr;
+    }
+
+    if (bsfCtx_) {
+        av_bsf_free(&bsfCtx_);
+        bsfCtx_ = nullptr;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(surfaceMutex_);
+        if (nativeWindow_) {
+            ANativeWindow_release(nativeWindow_);
+            nativeWindow_ = nullptr;
+        }
+    }
+
+    // Release Java global reference
+    JNIEnv *env = getJNIEnv();
+    if (env && javaPlayer_) {
+        env->DeleteGlobalRef(javaPlayer_);
+        javaPlayer_ = nullptr;
+    }
+
+    state_.store(FFPlayerState::IDLE);
+    LOGI("Player released");
+}
+
+void FFPlayerContext::setSurface(JNIEnv *env, jobject surface) {
+    std::lock_guard<std::mutex> lock(surfaceMutex_);
+
+    if (nativeWindow_) {
+        ANativeWindow_release(nativeWindow_);
+        nativeWindow_ = nullptr;
+    }
+
+    if (surface) {
+        nativeWindow_ = ANativeWindow_fromSurface(env, surface);
+        LOGD("Set Surface: window=%p", nativeWindow_);
+        
+        // If prepare was already called, need to reinit video decoder
+        if (state_.load() >= FFPlayerState::PREPARED && demuxer_ && demuxer_->getVideoStreamIndex() >= 0) {
+            if (videoDecoder_) {
+                videoDecoder_->release();
+                delete videoDecoder_;
+                videoDecoder_ = nullptr;
+            }
+            
+            if (nativeWindow_) {
+                videoDecoder_ = new FFVideoDecoder();
+                int ret = videoDecoder_->init(demuxer_->getVideoCodecParams(), nativeWindow_);
+                if (ret < 0) {
+                    LOGE("Video decoder reinit failed");
+                    delete videoDecoder_;
+                    videoDecoder_ = nullptr;
+                } else {
+                    LOGD("Video decoder reinitialized successfully");
+                }
+            }
+        }
+    } else {
+        LOGD("Surface cleared");
+    }
+}
+
+// ==================== Info Query ====================
+
+int64_t FFPlayerContext::getDuration() {
+    if (demuxer_) {
+        return demuxer_->getDurationUs() / 1000; // Return milliseconds
+    }
+    return 0;
+}
+
+int64_t FFPlayerContext::getCurrentPosition() {
+    if (audioDecoder_) {
+        return audioDecoder_->getAudioClockUs() / 1000; // Return milliseconds
+    }
+    return 0;
+}
+
+int FFPlayerContext::getState() {
+    return (int)state_.load();
+}
+
+int FFPlayerContext::getVideoWidth() {
+    return demuxer_ ? demuxer_->getWidth() : 0;
+}
+
+int FFPlayerContext::getVideoHeight() {
+    return demuxer_ ? demuxer_->getHeight() : 0;
+}
+
+// ==================== Thread Functions ====================
+
+void FFPlayerContext::readThreadFunc() {
+    LOGD("Read thread started");
+
+    int videoIdx = demuxer_->getVideoStreamIndex();
+    int audioIdx = demuxer_->getAudioStreamIndex();
+
+    // Get time_base for each stream for PTS conversion to microseconds
+    AVRational videoTb = demuxer_->getVideoTimeBase();
+    AVRational audioTb = demuxer_->getAudioTimeBase();
+    AVRational usTb = {1, AV_TIME_BASE}; // microsecond time_base
+    LOGD("Video time_base: %d/%d, Audio time_base: %d/%d",
+         videoTb.num, videoTb.den, audioTb.num, audioTb.den);
+
+    while (!abortRequest_.load()) {
+        // Handle seek request
+        if (seekRequest_.load()) {
+            int64_t seekPos = seekPositionUs_.load();
+            int ret = demuxer_->seek(seekPos);
+            if (ret >= 0) {
+                // Flush queues
+                videoQueue_.flush();
+                audioQueue_.flush();
+                // Flush decoders
+                if (videoDecoder_) videoDecoder_->flush();
+                if (audioDecoder_) audioDecoder_->flush();
+            }
+            seekRequest_.store(false);
+        }
+
+        // Check pause state
+        if (state_.load() == FFPlayerState::PAUSED) {
+            usleep(10000); // 10ms
+            continue;
+        }
+
+        // Control queue size to avoid excessive memory usage
+        if (videoQueue_.size() > 64 || audioQueue_.size() > 64) {
+            usleep(10000);
+            continue;
+        }
+
+        AVPacket *packet = av_packet_alloc();
+        int ret = demuxer_->readPacket(packet);
+
+        if (ret == AVERROR_EOF) {
+            av_packet_free(&packet);
+            // Send EOF marker
+            videoQueue_.eof.store(true);
+            audioQueue_.eof.store(true);
+            videoQueue_.cond.notify_all();
+            audioQueue_.cond.notify_all();
+            LOGD("Reached end of file");
+            break;
+        }
+
+        if (ret < 0) {
+            av_packet_free(&packet);
+            usleep(5000);
+            continue;
+        }
+
+        // Dispatch packet by stream index and convert PTS to microseconds
+        if (packet->stream_index == videoIdx) {
+            // Convert AVCC to AnnexB via bitstream filter (required by MediaCodec)
+            if (bsfCtx_) {
+                int bsfRet = av_bsf_send_packet(bsfCtx_, packet);
+                if (bsfRet < 0) {
+                    av_packet_free(&packet);
+                    continue;
+                }
+                while (av_bsf_receive_packet(bsfCtx_, packet) == 0) {
+                    if (packet->pts != AV_NOPTS_VALUE) {
+                        packet->pts = av_rescale_q(packet->pts, videoTb, usTb);
+                    }
+                    if (packet->dts != AV_NOPTS_VALUE) {
+                        packet->dts = av_rescale_q(packet->dts, videoTb, usTb);
+                    }
+                    videoQueue_.push(packet);
+                    packet = av_packet_alloc(); // Allocate new packet for next receive
+                }
+                av_packet_free(&packet); // Free last unused packet
+            } else {
+                // No bitstream filter needed (non H.264/HEVC or VP8/VP9)
+                if (packet->pts != AV_NOPTS_VALUE) {
+                    packet->pts = av_rescale_q(packet->pts, videoTb, usTb);
+                }
+                if (packet->dts != AV_NOPTS_VALUE) {
+                    packet->dts = av_rescale_q(packet->dts, videoTb, usTb);
+                }
+                videoQueue_.push(packet);
+            }
+            // Packet already pushed or freed, no further handling needed
+            continue;
+        } else if (packet->stream_index == audioIdx) {
+            if (packet->pts != AV_NOPTS_VALUE) {
+                packet->pts = av_rescale_q(packet->pts, audioTb, usTb);
+            }
+            if (packet->dts != AV_NOPTS_VALUE) {
+                packet->dts = av_rescale_q(packet->dts, audioTb, usTb);
+            }
+            audioQueue_.push(packet);
+        } else {
+            av_packet_free(&packet);
+        }
+    }
+
+    LOGD("Read thread exited");
+}
+
+void FFPlayerContext::videoThreadFunc() {
+    LOGD("Video thread started");
+    
+    // Variables for frame rate control
+    int64_t lastPtsUs = 0;
+
+    while (!abortRequest_.load()) {
+        if (state_.load() == FFPlayerState::PAUSED) {
+            usleep(10000);
+            continue;
+        }
+
+        // Pop packet from queue
+        AVPacket *packet = videoQueue_.pop();
+        if (!packet) {
+            if (videoQueue_.eof.load() && videoQueue_.size() == 0) {
+                videoDecoder_->sendPacket(nullptr);
+                // Drain decoder
+                while (!abortRequest_.load()) {
+                    int64_t ptsUs = 0;
+                    int ret = videoDecoder_->receiveFrame(ptsUs, false); // Don't render to Surface
+                    if (ret < 0) break;
+                }
+                break;
+            }
+            usleep(2000);
+            continue;
+        }
+
+        // Send packet to decoder
+        int sendRet = videoDecoder_->sendPacket(packet);
+        av_packet_free(&packet);
+
+        if (sendRet != 0) {
+            // Decoder full, retry later
+            usleep(1000);
+            continue;
+        }
+
+        // Receive decoded frames, do AV sync then render
+        while (!abortRequest_.load()) {
+            int64_t ptsUs = 0;
+            ssize_t bufIdx = -1;
+            int recvRet = videoDecoder_->dequeueFrame(ptsUs, bufIdx);
+
+            if (recvRet != 0) {
+                // 1 = no frame available (EAGAIN), break inner loop to send next packet
+                // < 0 = EOS or error
+                break;
+            }
+
+            if (bufIdx < 0) break; // Defensive check
+
+            // AV sync decision
+            bool shouldRender = true;
+            if (avSync_ && audioDecoder_) {
+                int64_t audioClk = audioDecoder_->getAudioClockUs();
+                if (audioClk > 0) {
+                    int64_t waitUs = 0;
+                    auto action = avSync_->sync(ptsUs, audioClk, waitUs);
+                    if (action == FFAVSync::WAIT && waitUs > 0) {
+                        // Video ahead, wait before rendering
+                        // Segmented sleep to respond to abort requests promptly
+                        int64_t remaining = std::min(waitUs, (int64_t)100000);
+                        while (remaining > 0 && !abortRequest_.load()) {
+                            int64_t sleepTime = std::min(remaining, (int64_t)5000);
+                            usleep((useconds_t)sleepTime);
+                            remaining -= sleepTime;
+                        }
+                        shouldRender = true; // Render after waiting
+                    } else if (action == FFAVSync::DROP) {
+                        // Video lagging too much, drop frame to catch up with audio
+                        shouldRender = false;
+                    }
+                    // RENDER: diff within acceptable range, render directly
+                } else {
+                    // Audio clock not yet updated (just started), use PTS-based frame rate control
+                    if (lastPtsUs > 0 && ptsUs > lastPtsUs) {
+                        int64_t frameDuration = ptsUs - lastPtsUs;
+                        if (frameDuration > 0 && frameDuration < 1000000) {
+                            usleep((useconds_t)frameDuration);
+                        }
+                    }
+                }
+                lastPtsUs = ptsUs;
+            } else {
+                // No audio stream, control playback speed based on frame rate
+                static int64_t lastFrameTime = av_gettime();
+                int64_t currentTime = av_gettime();
+                int64_t frameDuration = ptsUs - lastPtsUs;
+                
+                if (frameDuration > 0 && frameDuration < 1000000) { // Ensure reasonable frame interval (<1s)
+                    int64_t elapsed = currentTime - lastFrameTime;
+                    int64_t sleepTime = frameDuration - elapsed;
+                    
+                    if (sleepTime > 0 && sleepTime < 100000) { // Reasonable wait time (<100ms)
+                        usleep((useconds_t)sleepTime);
+                    }
+                }
+                
+                lastFrameTime = av_gettime();
+                lastPtsUs = ptsUs;
+            }
+
+            // Release frame: render to Surface or discard
+            videoDecoder_->releaseFrame(bufIdx, shouldRender);
+        }
+    }
+
+    // Check if playback completed (not user-initiated stop)
+    if (!abortRequest_.load() && videoDecoder_->isEOS()) {
+        // Wait for audio to finish too
+        while (!abortRequest_.load() && audioDecoder_ && !audioDecoder_->isEOS()) {
+            usleep(10000);
+        }
+        state_.store(FFPlayerState::COMPLETED);
+        notifyStateChanged((int)FFPlayerState::COMPLETED);
+        notifyCompletion();
+    }
+
+    LOGD("Video thread exited");
+}
+
+void FFPlayerContext::audioThreadFunc() {
+    LOGD("Audio thread started");
+
+    while (!abortRequest_.load()) {
+        if (state_.load() == FFPlayerState::PAUSED) {
+            usleep(10000);
+            continue;
+        }
+
+        // Pop packet from queue
+        AVPacket *packet = audioQueue_.pop();
+        if (!packet) {
+            if (audioQueue_.eof.load() && audioQueue_.size() == 0) {
+                audioDecoder_->sendPacket(nullptr);
+                // Drain decoder
+                while (!abortRequest_.load()) {
+                    int ret = audioDecoder_->decodeFrame();
+                    if (ret < 0) break;
+                }
+                break;
+            }
+            usleep(2000);
+            continue;
+        }
+
+        // Send to decoder
+        audioDecoder_->sendPacket(packet);
+        av_packet_free(&packet);
+
+        // Receive decoded frames and push to playback queue
+        while (!abortRequest_.load()) {
+            int ret = audioDecoder_->decodeFrame();
+            if (ret != 0) break; // EAGAIN or EOF
+        }
+    }
+
+    LOGD("Audio thread exited");
+}
+
+// ==================== Java Callbacks ====================
+
+void FFPlayerContext::notifyPrepared() {
+    JNIEnv *env = getJNIEnv();
+    if (!env || !javaPlayer_) return;
+
+    jclass clazz = env->GetObjectClass(javaPlayer_);
+    jmethodID method = env->GetMethodID(clazz, "onNativePrepared", "(J)V");
+    if (method) {
+        env->CallVoidMethod(javaPlayer_, method, getDuration());
+    }
+    env->DeleteLocalRef(clazz);
+}
+
+void FFPlayerContext::notifyCompletion() {
+    JNIEnv *env = getJNIEnv();
+    if (!env || !javaPlayer_) return;
+
+    jclass clazz = env->GetObjectClass(javaPlayer_);
+    jmethodID method = env->GetMethodID(clazz, "onNativeCompletion", "()V");
+    if (method) {
+        env->CallVoidMethod(javaPlayer_, method);
+    }
+    env->DeleteLocalRef(clazz);
+}
+
+void FFPlayerContext::notifyError(int code, const std::string &msg) {
+    JNIEnv *env = getJNIEnv();
+    if (!env || !javaPlayer_) return;
+
+    jclass clazz = env->GetObjectClass(javaPlayer_);
+    jmethodID method = env->GetMethodID(clazz, "onNativeError", "(ILjava/lang/String;)V");
+    if (method) {
+        jstring jMsg = env->NewStringUTF(msg.c_str());
+        env->CallVoidMethod(javaPlayer_, method, code, jMsg);
+        env->DeleteLocalRef(jMsg);
+    }
+    env->DeleteLocalRef(clazz);
+}
+
+void FFPlayerContext::notifyProgress(int64_t currentMs, int64_t totalMs) {
+    JNIEnv *env = getJNIEnv();
+    if (!env || !javaPlayer_) return;
+
+    jclass clazz = env->GetObjectClass(javaPlayer_);
+    jmethodID method = env->GetMethodID(clazz, "onNativeProgress", "(JJ)V");
+    if (method) {
+        env->CallVoidMethod(javaPlayer_, method, currentMs, totalMs);
+    }
+    env->DeleteLocalRef(clazz);
+}
+
+void FFPlayerContext::notifyVideoSizeChanged(int width, int height) {
+    JNIEnv *env = getJNIEnv();
+    if (!env || !javaPlayer_) return;
+
+    jclass clazz = env->GetObjectClass(javaPlayer_);
+    jmethodID method = env->GetMethodID(clazz, "onNativeVideoSizeChanged", "(II)V");
+    if (method) {
+        env->CallVoidMethod(javaPlayer_, method, width, height);
+    }
+    env->DeleteLocalRef(clazz);
+}
+
+void FFPlayerContext::notifyStateChanged(int state) {
+    JNIEnv *env = getJNIEnv();
+    if (!env || !javaPlayer_) return;
+
+    jclass clazz = env->GetObjectClass(javaPlayer_);
+    jmethodID method = env->GetMethodID(clazz, "onNativeStateChanged", "(I)V");
+    if (method) {
+        env->CallVoidMethod(javaPlayer_, method, state);
+    }
+    env->DeleteLocalRef(clazz);
+}

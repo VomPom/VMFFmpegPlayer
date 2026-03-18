@@ -1,0 +1,3 @@
+rootProject.name = "VMFFmpegPlayer"
+include ':app'
+include ':ffmpegplayer'

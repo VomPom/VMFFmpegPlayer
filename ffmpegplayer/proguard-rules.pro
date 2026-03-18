@@ -1,0 +1,1 @@
+# ffmpegplayer ProGuard rules
