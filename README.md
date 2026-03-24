@@ -107,7 +107,22 @@ player.seekTo(positionMs)     // Seek 到指定位置（毫秒）
 player.stop()                 // 停止
 player.reset()                // 重置（可重新 prepare）
 player.release()              // 释放资源
+
+// 画面适配模式设置
+playerView.setScaleType(FFPlayerView.ScaleType.CENTER_INSIDE)  // 居中显示（默认）
+playerView.setScaleType(FFPlayerView.ScaleType.CENTER_CROP)    // 裁剪填充
+playerView.setScaleType(FFPlayerView.ScaleType.FIT_XY)         // 拉伸铺满
+playerView.setScaleType(FFPlayerView.ScaleType.ORIGINAL)      // 原始尺寸
 ```
+
+### 画面适配模式说明
+
+| 模式 | 说明 | 适用场景 |
+|------|------|----------|
+| **CENTER_INSIDE**（居中显示） | 保持视频原始宽高比，完整显示视频内容，不裁剪 | 默认模式，适合大多数场景 |
+| **CENTER_CROP**（裁剪填充） | 保持视频原始宽高比，裁剪视频边缘以填充整个视图 | 全屏播放，避免黑边 |
+| **FIT_XY**（拉伸铺满） | 拉伸视频以完全填充视图，会变形 | 特殊需求，不推荐使用 |
+| **ORIGINAL**（原始尺寸） | 以视频原始尺寸显示，不缩放 | 需要查看原始像素的场景 |
 
 ### 播放器状态
 

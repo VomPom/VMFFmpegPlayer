@@ -130,22 +130,22 @@ static jint nativeGetVideoHeight(JNIEnv *env, jobject thiz) {
 // ==================== 动态注册 ====================
 
 static const JNINativeMethod g_methods[] = {
-        {"nativeInit",               "()V",                                   (void *) nativeInit},
-        {"nativePrepare",            "(Ljava/lang/String;)I",                 (void *) nativePrepare},
-        {"nativePrepareWithFd",      "(I)I",                                  (void *) nativePrepareWithFd},
-        {"nativeStart",              "()V",                                   (void *) nativeStart},
-        {"nativePause",              "()V",                                   (void *) nativePause},
-        {"nativeResume",             "()V",                                   (void *) nativeResume},
-        {"nativeStop",               "()V",                                   (void *) nativeStop},
-        {"nativeSeekTo",             "(J)V",                                  (void *) nativeSeekTo},
-        {"nativeRelease",            "()V",                                   (void *) nativeRelease},
-        {"nativeReset",              "()V",                                   (void *) nativeReset},
-        {"nativeSetSurface",         "(Landroid/view/Surface;)V",             (void *) nativeSetSurface},
-        {"nativeGetDuration",        "()J",                                   (void *) nativeGetDuration},
-        {"nativeGetCurrentPosition", "()J",                                   (void *) nativeGetCurrentPosition},
-        {"nativeGetState",           "()I",                                   (void *) nativeGetState},
-        {"nativeGetVideoWidth",      "()I",                                   (void *) nativeGetVideoWidth},
-        {"nativeGetVideoHeight",     "()I",                                   (void *) nativeGetVideoHeight},
+        {"nativeInit",               "()V",                       (void *) nativeInit},
+        {"nativePrepare",            "(Ljava/lang/String;)I",     (void *) nativePrepare},
+        {"nativePrepareWithFd",      "(I)I",                      (void *) nativePrepareWithFd},
+        {"nativeStart",              "()V",                       (void *) nativeStart},
+        {"nativePause",              "()V",                       (void *) nativePause},
+        {"nativeResume",             "()V",                       (void *) nativeResume},
+        {"nativeStop",               "()V",                       (void *) nativeStop},
+        {"nativeSeekTo",             "(J)V",                      (void *) nativeSeekTo},
+        {"nativeRelease",            "()V",                       (void *) nativeRelease},
+        {"nativeReset",              "()V",                       (void *) nativeReset},
+        {"nativeSetSurface",         "(Landroid/view/Surface;)V", (void *) nativeSetSurface},
+        {"nativeGetDuration",        "()J",                       (void *) nativeGetDuration},
+        {"nativeGetCurrentPosition", "()J",                       (void *) nativeGetCurrentPosition},
+        {"nativeGetState",           "()I",                       (void *) nativeGetState},
+        {"nativeGetVideoWidth",      "()I",                       (void *) nativeGetVideoWidth},
+        {"nativeGetVideoHeight",     "()I",                       (void *) nativeGetVideoHeight},
 };
 
 /**

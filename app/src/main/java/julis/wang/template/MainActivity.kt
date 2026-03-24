@@ -2,12 +2,10 @@ package julis.wang.template
 
 import android.Manifest
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
-import android.view.View
 import android.widget.Button
 import android.widget.SeekBar
 import android.widget.TextView
@@ -34,13 +32,11 @@ class MainActivity : AppCompatActivity(), FFPlayer.Listener {
     private lateinit var currentTimeText: TextView
     private lateinit var totalTimeText: TextView
     private lateinit var playPauseButton: Button
-    private lateinit var stopButton: Button
-    private lateinit var fullscreenButton: Button
+    private lateinit var scaleModeButton: Button
     private lateinit var statusText: TextView
 
     private var player: FFPlayer? = null
     private var isSeeking = false
-    private var isFullscreen = false
     private val updateHandler = Handler(Looper.getMainLooper())
     private val updateRunnable = object : Runnable {
         override fun run() {
@@ -65,8 +61,7 @@ class MainActivity : AppCompatActivity(), FFPlayer.Listener {
         currentTimeText = findViewById(R.id.currentTimeText)
         totalTimeText = findViewById(R.id.totalTimeText)
         playPauseButton = findViewById(R.id.playPauseButton)
-        stopButton = findViewById(R.id.stopButton)
-        fullscreenButton = findViewById(R.id.fullscreenButton)
+        scaleModeButton = findViewById(R.id.scaleModeButton)
         statusText = findViewById(R.id.statusText)
 
         setupListeners()
@@ -77,18 +72,21 @@ class MainActivity : AppCompatActivity(), FFPlayer.Listener {
             togglePlayPause()
         }
 
-        stopButton.setOnClickListener {
-            stopPlayback()
-        }
-
-        fullscreenButton.setOnClickListener {
-            toggleFullscreen()
+        scaleModeButton.setOnClickListener {
+            toggleScaleMode()
         }
 
         seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                 if (fromUser) {
                     currentTimeText.text = formatTime(progress.toLong())
+                    // 暂停时拖动实时 seek，让画面跟着变
+                    player?.let {
+                        val state = it.getState()
+                        if (state == FFPlayer.STATE_PAUSED || state == FFPlayer.STATE_PREPARED) {
+                            it.seekTo(progress.toLong())
+                        }
+                    }
                 }
             }
 
@@ -222,12 +220,6 @@ class MainActivity : AppCompatActivity(), FFPlayer.Listener {
                     it.start()
                     playPauseButton.text = "暂停"
                 }
-                FFPlayer.STATE_STOPPED -> {
-                    // 停止状态，需要重新加载视频
-                    Log.d(TAG, "从停止状态重新加载视频")
-                    loadVideo()
-                    playPauseButton.text = "准备中..."
-                }
                 else -> {
                     it.prepareAsync()
                     playPauseButton.text = "准备中..."
@@ -236,19 +228,23 @@ class MainActivity : AppCompatActivity(), FFPlayer.Listener {
         }
     }
 
-    private fun stopPlayback() {
-        player?.stop()
-        playPauseButton.text = "播放"
-        seekBar.progress = 0
-        currentTimeText.text = "00:00"
-        statusText.text = "播放已停止"
-    }
-
-    private fun toggleFullscreen() {
-        isFullscreen = !isFullscreen
-        fullscreenButton.text = if (isFullscreen) "退出全屏" else "全屏"
-        // 这里可以添加全屏切换逻辑
-        statusText.text = if (isFullscreen) "全屏模式" else "正常模式"
+    private fun toggleScaleMode() {
+        val currentMode = playerView.getCurrentScaleType()
+        val nextMode = when (currentMode) {
+            FFPlayerView.ScaleType.CENTER_INSIDE -> FFPlayerView.ScaleType.CENTER_CROP
+            FFPlayerView.ScaleType.CENTER_CROP -> FFPlayerView.ScaleType.FIT_XY
+            FFPlayerView.ScaleType.FIT_XY -> FFPlayerView.ScaleType.ORIGINAL
+            FFPlayerView.ScaleType.ORIGINAL -> FFPlayerView.ScaleType.CENTER_INSIDE
+        }
+        
+        playerView.setScaleType(nextMode)
+        scaleModeButton.text = when (nextMode) {
+            FFPlayerView.ScaleType.CENTER_INSIDE -> "居中显示"
+            FFPlayerView.ScaleType.CENTER_CROP -> "裁剪填充"
+            FFPlayerView.ScaleType.FIT_XY -> "拉伸铺满"
+            FFPlayerView.ScaleType.ORIGINAL -> "原始尺寸"
+        }
+        statusText.text = "画面模式: ${scaleModeButton.text}"
     }
 
     private fun updateProgress() {
@@ -290,12 +286,18 @@ class MainActivity : AppCompatActivity(), FFPlayer.Listener {
     }
 
     override fun onCompletion() {
-        Log.d(TAG, "onCompletion")
+        Log.d(TAG, "onCompletion，自动重播")
         runOnUiThread {
-            playPauseButton.text = "播放"
-            seekBar.progress = seekBar.max
-            statusText.text = "播放完成"
-            updateHandler.removeCallbacks(updateRunnable)
+            // 自动重播：重置播放器并重新开始播放
+            player?.let {
+                it.reset()
+                it.start()
+                playPauseButton.text = "暂停"
+                seekBar.progress = 0
+                currentTimeText.text = "00:00"
+                statusText.text = "自动重播中"
+                updateHandler.post(updateRunnable)
+            }
         }
     }
 
@@ -311,6 +313,7 @@ class MainActivity : AppCompatActivity(), FFPlayer.Listener {
         Log.d(TAG, "onVideoSizeChanged: ${width}x${height}")
         runOnUiThread {
             statusText.text = "视频尺寸: ${width}x${height}"
+            playerView.setVideoSize(width, height)
         }
     }
 
@@ -336,10 +339,6 @@ class MainActivity : AppCompatActivity(), FFPlayer.Listener {
                     updateHandler.post(updateRunnable)
                 }
                 FFPlayer.STATE_PAUSED, FFPlayer.STATE_STOPPED -> {
-                    playPauseButton.text = "播放"
-                    updateHandler.removeCallbacks(updateRunnable)
-                }
-                FFPlayer.STATE_COMPLETED -> {
                     playPauseButton.text = "播放"
                     updateHandler.removeCallbacks(updateRunnable)
                 }

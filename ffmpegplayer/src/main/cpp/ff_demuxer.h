@@ -16,6 +16,7 @@ extern "C" {
 class FFDemuxer {
 public:
     FFDemuxer();
+
     ~FFDemuxer();
 
     /**
@@ -51,18 +52,28 @@ public:
 
     // Stream info access
     int getVideoStreamIndex() const { return videoStreamIndex; }
+
     int getAudioStreamIndex() const { return audioStreamIndex; }
+
     AVCodecParameters *getVideoCodecParams() const;
+
     AVCodecParameters *getAudioCodecParams() const;
+
     int64_t getDurationUs() const;
+
     int getWidth() const;
+
     int getHeight() const;
+
     double getVideoFps() const;
+
     int getSampleRate() const;
+
     int getChannels() const;
 
     /** Get video stream time_base */
     AVRational getVideoTimeBase() const;
+
     /** Get audio stream time_base */
     AVRational getAudioTimeBase() const;
 

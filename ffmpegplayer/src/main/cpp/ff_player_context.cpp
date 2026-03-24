@@ -8,7 +8,7 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 
 FFPlayerContext::FFPlayerContext(JavaVM *javaVM, jobject javaPlayer)
-    : javaVM_(javaVM) {
+        : javaVM_(javaVM) {
     JNIEnv *env = getJNIEnv();
     if (env) {
         javaPlayer_ = env->NewGlobalRef(javaPlayer);
@@ -19,10 +19,10 @@ FFPlayerContext::~FFPlayerContext() {
     release();
 }
 
-JNIEnv* FFPlayerContext::getJNIEnv() {
+JNIEnv *FFPlayerContext::getJNIEnv() {
     JNIEnv *env = nullptr;
     if (javaVM_) {
-        int status = javaVM_->GetEnv((void**)&env, JNI_VERSION_1_6);
+        int status = javaVM_->GetEnv((void **) &env, JNI_VERSION_1_6);
         if (status == JNI_EDETACHED) {
             javaVM_->AttachCurrentThread(&env, nullptr);
         }
@@ -41,7 +41,7 @@ void FFPlayerContext::detachThread() {
 int FFPlayerContext::prepare(const std::string &path) {
     FFPlayerState curState = state_.load();
     if (curState != FFPlayerState::IDLE && curState != FFPlayerState::STOPPED) {
-        LOGE("prepare: invalid state: %d", (int)curState);
+        LOGE("prepare: invalid state: %d", (int) curState);
         return -1;
     }
 
@@ -73,7 +73,7 @@ int FFPlayerContext::prepare(const std::string &path) {
     }
 
     state_.store(FFPlayerState::PREPARING);
-    notifyStateChanged((int)FFPlayerState::PREPARING);
+    notifyStateChanged((int) FFPlayerState::PREPARING);
 
     // Create demuxer
     demuxer_ = new FFDemuxer();
@@ -145,7 +145,7 @@ int FFPlayerContext::prepare(const std::string &path) {
     }
 
     state_.store(FFPlayerState::PREPARED);
-    notifyStateChanged((int)FFPlayerState::PREPARED);
+    notifyStateChanged((int) FFPlayerState::PREPARED);
     notifyPrepared();
 
     if (videoDecoder_) {
@@ -153,7 +153,7 @@ int FFPlayerContext::prepare(const std::string &path) {
     }
 
     LOGI("Prepare done: duration=%lldms, video=%dx%d, fps=%.1f",
-         (long long)(demuxer_->getDurationUs() / 1000),
+         (long long) (demuxer_->getDurationUs() / 1000),
          demuxer_->getWidth(), demuxer_->getHeight(),
          demuxer_->getVideoFps());
 
@@ -168,15 +168,33 @@ int FFPlayerContext::prepareWithFd(int fd) {
 
     // If re-preparing from STOPPED state, release old resources first
     if (curState == FFPlayerState::STOPPED) {
-        if (videoDecoder_) { videoDecoder_->release(); delete videoDecoder_; videoDecoder_ = nullptr; }
-        if (audioDecoder_) { audioDecoder_->release(); delete audioDecoder_; audioDecoder_ = nullptr; }
-        if (demuxer_) { demuxer_->close(); delete demuxer_; demuxer_ = nullptr; }
-        if (avSync_) { delete avSync_; avSync_ = nullptr; }
-        if (bsfCtx_) { av_bsf_free(&bsfCtx_); bsfCtx_ = nullptr; }
+        if (videoDecoder_) {
+            videoDecoder_->release();
+            delete videoDecoder_;
+            videoDecoder_ = nullptr;
+        }
+        if (audioDecoder_) {
+            audioDecoder_->release();
+            delete audioDecoder_;
+            audioDecoder_ = nullptr;
+        }
+        if (demuxer_) {
+            demuxer_->close();
+            delete demuxer_;
+            demuxer_ = nullptr;
+        }
+        if (avSync_) {
+            delete avSync_;
+            avSync_ = nullptr;
+        }
+        if (bsfCtx_) {
+            av_bsf_free(&bsfCtx_);
+            bsfCtx_ = nullptr;
+        }
     }
 
     state_.store(FFPlayerState::PREPARING);
-    notifyStateChanged((int)FFPlayerState::PREPARING);
+    notifyStateChanged((int) FFPlayerState::PREPARING);
 
     demuxer_ = new FFDemuxer();
     int ret = demuxer_->openFd(fd);
@@ -236,7 +254,7 @@ int FFPlayerContext::prepareWithFd(int fd) {
     }
 
     state_.store(FFPlayerState::PREPARED);
-    notifyStateChanged((int)FFPlayerState::PREPARED);
+    notifyStateChanged((int) FFPlayerState::PREPARED);
     notifyPrepared();
 
     if (videoDecoder_) {
@@ -252,7 +270,7 @@ void FFPlayerContext::start() {
         // Also allow starting from PAUSED state
         expected = FFPlayerState::PAUSED;
         if (!state_.compare_exchange_strong(expected, FFPlayerState::PLAYING)) {
-            LOGE("start: invalid state %d", (int)state_.load());
+            LOGE("start: invalid state %d", (int) state_.load());
             return;
         }
         // Resume from pause
@@ -261,7 +279,7 @@ void FFPlayerContext::start() {
     }
 
     abortRequest_.store(false);
-    notifyStateChanged((int)FFPlayerState::PLAYING);
+    notifyStateChanged((int) FFPlayerState::PLAYING);
 
     // Start read thread
     readThread_ = std::thread(&FFPlayerContext::readThreadFunc, this);
@@ -289,7 +307,7 @@ void FFPlayerContext::pause() {
         audioDecoder_->pause();
     }
 
-    notifyStateChanged((int)FFPlayerState::PAUSED);
+    notifyStateChanged((int) FFPlayerState::PAUSED);
     LOGI("Playback paused");
 }
 
@@ -303,7 +321,7 @@ void FFPlayerContext::resume() {
         audioDecoder_->resume();
     }
 
-    notifyStateChanged((int)FFPlayerState::PLAYING);
+    notifyStateChanged((int) FFPlayerState::PLAYING);
     LOGI("Playback resumed");
 }
 
@@ -313,17 +331,17 @@ void FFPlayerContext::stop() {
         return;
     }
 
-    LOGI("Stopping playback, current state: %d", (int)curState);
-    
+    LOGI("Stopping playback, current state: %d", (int) curState);
+
     // Set abort flag
     abortRequest_.store(true);
-    
+
     // Notify queues to stop
     videoQueue_.abort();
     audioQueue_.abort();
-    
+
     // Wait for threads to finish
-    auto joinThread = [](std::thread& thread, const char* threadName) {
+    auto joinThread = [](std::thread &thread, const char *threadName) {
         if (thread.joinable()) {
             LOGI("Waiting for %s thread to finish", threadName);
             thread.join();
@@ -340,55 +358,59 @@ void FFPlayerContext::stop() {
     audioQueue_.flush();
 
     state_.store(FFPlayerState::STOPPED);
-    notifyStateChanged((int)FFPlayerState::STOPPED);
+    notifyStateChanged((int) FFPlayerState::STOPPED);
     LOGI("Playback stopped");
 }
 
 void FFPlayerContext::seekTo(int64_t positionMs) {
-    seekPositionUs_.store(positionMs * 1000);
+    int64_t targetUs = positionMs * 1000;
+    seekPositionUs_.store(targetUs);
+    seekTargetUs_.store(targetUs); // 设置精确 seek 目标，视频线程会丢弃 PTS < 此值的帧
     seekRequest_.store(true);
-    LOGI("Seek to %lld ms", (long long)positionMs);
+    LOGI("Seek to %lld ms (target %lld us)", (long long) positionMs, (long long) targetUs);
 }
 
 void FFPlayerContext::reset() {
     LOGI("Resetting player state");
-    
+
     // Stop current playback (waits for all threads to exit)
     stop();
-    
+
     // Reset all state variables
     abortRequest_.store(false);
     seekRequest_.store(false);
     seekPositionUs_.store(0);
-    
+    seekDoneWhilePaused_.store(false);
+    seekTargetUs_.store(-1);
+
     // Flush and reset queue state
     videoQueue_.flush();
     audioQueue_.flush();
-    
+
     // Seek demuxer to beginning
     if (demuxer_) {
         demuxer_->seek(0);
     }
-    
+
     // Reset video decoder (flush MediaCodec and reset EOS state)
     if (videoDecoder_) {
         videoDecoder_->flush();
     }
-    
+
     // Reset audio decoder (flush FFmpeg decoder, clear OpenSL ES buffer queue, reset clock)
     if (audioDecoder_) {
         audioDecoder_->flush();
     }
-    
+
     // Reset sync manager
     if (avSync_) {
         avSync_->reset();
     }
-    
+
     // Reset state to PREPARED so start() can be called directly
     state_.store(FFPlayerState::PREPARED);
-    notifyStateChanged((int)FFPlayerState::PREPARED);
-    
+    notifyStateChanged((int) FFPlayerState::PREPARED);
+
     LOGI("Player reset complete, state set to PREPARED");
 }
 
@@ -455,7 +477,7 @@ void FFPlayerContext::setSurface(JNIEnv *env, jobject surface) {
     if (surface) {
         nativeWindow_ = ANativeWindow_fromSurface(env, surface);
         LOGD("Set Surface: window=%p", nativeWindow_);
-        
+
         // If prepare was already called, need to reinit video decoder
         if (state_.load() >= FFPlayerState::PREPARED && demuxer_ && demuxer_->getVideoStreamIndex() >= 0) {
             if (videoDecoder_) {
@@ -463,7 +485,7 @@ void FFPlayerContext::setSurface(JNIEnv *env, jobject surface) {
                 delete videoDecoder_;
                 videoDecoder_ = nullptr;
             }
-            
+
             if (nativeWindow_) {
                 videoDecoder_ = new FFVideoDecoder();
                 int ret = videoDecoder_->init(demuxer_->getVideoCodecParams(), nativeWindow_);
@@ -498,7 +520,7 @@ int64_t FFPlayerContext::getCurrentPosition() {
 }
 
 int FFPlayerContext::getState() {
-    return (int)state_.load();
+    return (int) state_.load();
 }
 
 int FFPlayerContext::getVideoWidth() {
@@ -525,9 +547,10 @@ void FFPlayerContext::readThreadFunc() {
          videoTb.num, videoTb.den, audioTb.num, audioTb.den);
 
     while (!abortRequest_.load()) {
-        // Handle seek request
+        // Handle seek request (must be before pause check so seek works while paused)
         if (seekRequest_.load()) {
             int64_t seekPos = seekPositionUs_.load();
+            bool wasPaused = (state_.load() == FFPlayerState::PAUSED);
             int ret = demuxer_->seek(seekPos);
             if (ret >= 0) {
                 // Flush queues
@@ -536,6 +559,52 @@ void FFPlayerContext::readThreadFunc() {
                 // Flush decoders
                 if (videoDecoder_) videoDecoder_->flush();
                 if (audioDecoder_) audioDecoder_->flush();
+
+                // 暂停状态下 seek 后，预读几个视频包送入队列，以便视频线程解码渲染一帧
+                if (wasPaused && videoDecoder_) {
+                    int videoIdx = demuxer_->getVideoStreamIndex();
+                    AVRational seekVideoTb = demuxer_->getVideoTimeBase();
+                    AVRational seekUsTb = {1, AV_TIME_BASE};
+                    int prereadCount = 0;
+                    // 预读最多 300 个视频包，确保覆盖整个 GOP 间隔以精确定位到目标帧
+                    while (prereadCount < 300) {
+                        AVPacket *pkt = av_packet_alloc();
+                        int readRet = demuxer_->readPacket(pkt);
+                        if (readRet < 0) {
+                            av_packet_free(&pkt);
+                            break;
+                        }
+                        if (pkt->stream_index == videoIdx) {
+                            // 通过 bsf 过滤并转换时间基
+                            if (bsfCtx_) {
+                                int bsfRet = av_bsf_send_packet(bsfCtx_, pkt);
+                                if (bsfRet >= 0) {
+                                    while (av_bsf_receive_packet(bsfCtx_, pkt) == 0) {
+                                        if (pkt->pts != AV_NOPTS_VALUE)
+                                            pkt->pts = av_rescale_q(pkt->pts, seekVideoTb, seekUsTb);
+                                        if (pkt->dts != AV_NOPTS_VALUE)
+                                            pkt->dts = av_rescale_q(pkt->dts, seekVideoTb, seekUsTb);
+                                        videoQueue_.push(pkt);
+                                        prereadCount++;
+                                        pkt = av_packet_alloc();
+                                    }
+                                }
+                                av_packet_free(&pkt);
+                            } else {
+                                if (pkt->pts != AV_NOPTS_VALUE)
+                                    pkt->pts = av_rescale_q(pkt->pts, seekVideoTb, seekUsTb);
+                                if (pkt->dts != AV_NOPTS_VALUE)
+                                    pkt->dts = av_rescale_q(pkt->dts, seekVideoTb, seekUsTb);
+                                videoQueue_.push(pkt);
+                                prereadCount++;
+                            }
+                        } else {
+                            av_packet_free(&pkt);
+                        }
+                    }
+                    seekDoneWhilePaused_.store(true);
+                    LOGD("Paused seek: preread %d video packets", prereadCount);
+                }
             }
             seekRequest_.store(false);
         }
@@ -622,12 +691,53 @@ void FFPlayerContext::readThreadFunc() {
 
 void FFPlayerContext::videoThreadFunc() {
     LOGD("Video thread started");
-    
+
     // Variables for frame rate control
     int64_t lastPtsUs = 0;
 
     while (!abortRequest_.load()) {
         if (state_.load() == FFPlayerState::PAUSED) {
+            // 暂停状态下，如果刚完成 seek，解码并渲染一帧以实现拖动预览
+            if (seekDoneWhilePaused_.load()) {
+                seekDoneWhilePaused_.store(false);
+                // 从队列中取包、解码、精确定位到目标帧并渲染
+                int64_t pauseSeekTarget = seekTargetUs_.load();
+                bool rendered = false;
+                while (!abortRequest_.load()) {
+                    AVPacket *pkt = videoQueue_.pop();
+                    if (!pkt) break;
+                    int sendRet = videoDecoder_->sendPacket(pkt);
+                    av_packet_free(&pkt);
+                    if (sendRet != 0) continue;
+
+                    // 尝试取出解码帧
+                    while (!abortRequest_.load()) {
+                        int64_t framePts = 0;
+                        ssize_t frameBufIdx = -1;
+                        int recvRet = videoDecoder_->dequeueFrame(framePts, frameBufIdx);
+                        if (recvRet != 0 || frameBufIdx < 0) break;
+
+                        // 精确 seek：PTS < 目标的帧只解码不渲染
+                        if (pauseSeekTarget >= 0 && framePts < pauseSeekTarget) {
+                            videoDecoder_->releaseFrame(frameBufIdx, false); // 丢弃
+                            continue;
+                        }
+
+                        // PTS >= 目标，渲染这一帧
+                        videoDecoder_->releaseFrame(frameBufIdx, true);
+                        rendered = true;
+                        seekTargetUs_.store(-1);
+                        break;
+                    }
+                    if (rendered) break;
+                }
+                // 清空预读队列中剩余的包
+                while (true) {
+                    AVPacket *remaining = videoQueue_.pop();
+                    if (!remaining) break;
+                    av_packet_free(&remaining);
+                }
+            }
             usleep(10000);
             continue;
         }
@@ -673,6 +783,17 @@ void FFPlayerContext::videoThreadFunc() {
 
             if (bufIdx < 0) break; // Defensive check
 
+            // 精确 seek：丢弃 PTS < seek 目标的帧（只解码不渲染）
+            int64_t curSeekTarget = seekTargetUs_.load();
+            if (curSeekTarget >= 0 && ptsUs < curSeekTarget) {
+                videoDecoder_->releaseFrame(bufIdx, false); // 丢弃这一帧
+                continue; // 继续解码下一帧
+            }
+            // 已达到或超过目标位置，清除精确 seek 标志
+            if (curSeekTarget >= 0) {
+                seekTargetUs_.store(-1);
+            }
+
             // AV sync decision
             bool shouldRender = true;
             if (avSync_ && audioDecoder_) {
@@ -683,10 +804,10 @@ void FFPlayerContext::videoThreadFunc() {
                     if (action == FFAVSync::WAIT && waitUs > 0) {
                         // Video ahead, wait before rendering
                         // Segmented sleep to respond to abort requests promptly
-                        int64_t remaining = std::min(waitUs, (int64_t)100000);
+                        int64_t remaining = std::min(waitUs, (int64_t) 100000);
                         while (remaining > 0 && !abortRequest_.load()) {
-                            int64_t sleepTime = std::min(remaining, (int64_t)5000);
-                            usleep((useconds_t)sleepTime);
+                            int64_t sleepTime = std::min(remaining, (int64_t) 5000);
+                            usleep((useconds_t) sleepTime);
                             remaining -= sleepTime;
                         }
                         shouldRender = true; // Render after waiting
@@ -700,7 +821,7 @@ void FFPlayerContext::videoThreadFunc() {
                     if (lastPtsUs > 0 && ptsUs > lastPtsUs) {
                         int64_t frameDuration = ptsUs - lastPtsUs;
                         if (frameDuration > 0 && frameDuration < 1000000) {
-                            usleep((useconds_t)frameDuration);
+                            usleep((useconds_t) frameDuration);
                         }
                     }
                 }
@@ -710,16 +831,16 @@ void FFPlayerContext::videoThreadFunc() {
                 static int64_t lastFrameTime = av_gettime();
                 int64_t currentTime = av_gettime();
                 int64_t frameDuration = ptsUs - lastPtsUs;
-                
+
                 if (frameDuration > 0 && frameDuration < 1000000) { // Ensure reasonable frame interval (<1s)
                     int64_t elapsed = currentTime - lastFrameTime;
                     int64_t sleepTime = frameDuration - elapsed;
-                    
+
                     if (sleepTime > 0 && sleepTime < 100000) { // Reasonable wait time (<100ms)
-                        usleep((useconds_t)sleepTime);
+                        usleep((useconds_t) sleepTime);
                     }
                 }
-                
+
                 lastFrameTime = av_gettime();
                 lastPtsUs = ptsUs;
             }
@@ -736,7 +857,7 @@ void FFPlayerContext::videoThreadFunc() {
             usleep(10000);
         }
         state_.store(FFPlayerState::COMPLETED);
-        notifyStateChanged((int)FFPlayerState::COMPLETED);
+        notifyStateChanged((int) FFPlayerState::COMPLETED);
         notifyCompletion();
     }
 

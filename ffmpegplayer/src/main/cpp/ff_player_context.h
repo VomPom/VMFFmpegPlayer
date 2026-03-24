@@ -48,17 +48,26 @@ enum class FFPlayerState {
 class FFPlayerContext {
 public:
     FFPlayerContext(JavaVM *javaVM, jobject javaPlayer);
+
     ~FFPlayerContext();
 
     // Playback control
     int prepare(const std::string &path);
+
     int prepareWithFd(int fd);
+
     void start();
+
     void pause();
+
     void resume();
+
     void stop();
+
     void seekTo(int64_t positionMs);
+
     void release();
+
     void reset(); // Reset player state for replay
 
     // Set Surface
@@ -66,9 +75,13 @@ public:
 
     // Info query
     int64_t getDuration();
+
     int64_t getCurrentPosition();
+
     int getState();
+
     int getVideoWidth();
+
     int getVideoHeight();
 
 private:
@@ -92,6 +105,8 @@ private:
     std::atomic<bool> abortRequest_{false};
     std::atomic<bool> seekRequest_{false};
     std::atomic<int64_t> seekPositionUs_{0};
+    std::atomic<bool> seekDoneWhilePaused_{false}; // 暂停期间完成 seek，通知视频线程渲染一帧
+    std::atomic<int64_t> seekTargetUs_{-1}; // 精确 seek 目标时间，>= 0 表示需要丢弃 PTS < 此值的帧
 
     // Packet queue (simplified: using vector + mutex)
     struct PacketQueue {
@@ -104,7 +119,7 @@ private:
 
         void push(AVPacket *pkt) {
             std::unique_lock<std::mutex> lock(mutex);
-            while ((int)packets.size() >= maxSize && !aborted.load()) {
+            while ((int) packets.size() >= maxSize && !aborted.load()) {
                 cond.wait_for(lock, std::chrono::milliseconds(10));
             }
             if (aborted.load()) {
@@ -115,9 +130,9 @@ private:
             cond.notify_one();
         }
 
-        AVPacket* pop() {
+        AVPacket *pop() {
             std::unique_lock<std::mutex> lock(mutex);
-        // Wait until data available, EOF, or abort
+            // Wait until data available, EOF, or abort
             while (packets.empty() && !eof.load() && !aborted.load()) {
                 cond.wait_for(lock, std::chrono::milliseconds(10));
             }
@@ -130,7 +145,7 @@ private:
 
         void flush() {
             std::lock_guard<std::mutex> lock(mutex);
-            for (auto *pkt : packets) {
+            for (auto *pkt: packets) {
                 av_packet_free(&pkt);
             }
             packets.clear();
@@ -141,7 +156,7 @@ private:
 
         int size() {
             std::lock_guard<std::mutex> lock(mutex);
-            return (int)packets.size();
+            return (int) packets.size();
         }
 
         void abort() {
@@ -163,18 +178,26 @@ private:
 
     // Thread functions
     void readThreadFunc();
+
     void videoThreadFunc();
+
     void audioThreadFunc();
 
     // Java callbacks
     void notifyPrepared();
+
     void notifyCompletion();
+
     void notifyError(int code, const std::string &msg);
+
     void notifyProgress(int64_t currentMs, int64_t totalMs);
+
     void notifyVideoSizeChanged(int width, int height);
+
     void notifyStateChanged(int state);
 
-    JNIEnv* getJNIEnv();
+    JNIEnv *getJNIEnv();
+
     void detachThread();
 };
 

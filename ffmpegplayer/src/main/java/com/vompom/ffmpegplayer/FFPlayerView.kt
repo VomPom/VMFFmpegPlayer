@@ -78,7 +78,36 @@ class FFPlayerView @JvmOverloads constructor(
     }
 
     /**
-     * 调整画面宽高比，铺满显示
+     * 画面适配模式
+     */
+    enum class ScaleType {
+        CENTER_INSIDE,    // 保持宽高比，完整显示视频内容（默认）
+        CENTER_CROP,      // 保持宽高比，裁剪视频内容以填充视图
+        FIT_XY,           // 拉伸铺满整个视图（会变形）
+        ORIGINAL          // 原始尺寸显示
+    }
+
+    private var scaleType = ScaleType.CENTER_INSIDE
+
+    /**
+     * 设置画面适配模式
+     */
+    fun setScaleType(type: ScaleType) {
+        scaleType = type
+        adjustAspectRatio()
+    }
+
+    /**
+     * 获取当前画面适配模式
+     */
+    fun getCurrentScaleType(): ScaleType = scaleType
+
+    /**
+     * 调整画面宽高比，根据适配模式显示
+     *
+     * 注意：TextureView 默认会将内容拉伸到整个 View 尺寸（等同于 FIT_XY），
+     * 因此 Matrix 变换是基于已经拉伸到 viewWidth x viewHeight 的画面来做的，
+     * 需要先"还原"到正确的宽高比，再进行缩放和位移。
      */
     private fun adjustAspectRatio() {
         if (videoWidth <= 0 || videoHeight <= 0 || width <= 0 || height <= 0) return
@@ -89,27 +118,52 @@ class FFPlayerView @JvmOverloads constructor(
         val viewRatio = viewWidth / viewHeight
 
         val matrix = Matrix()
-        
-        if (videoRatio > viewRatio) {
-            // 视频更宽，按宽度缩放
-            val scale = viewWidth / videoWidth
-            matrix.setScale(scale, scale)
-            // 垂直居中
-            val scaledHeight = videoHeight * scale
-            val translateY = (viewHeight - scaledHeight) / 2
-            matrix.postTranslate(0f, translateY)
-        } else {
-            // 视频更高，按高度缩放
-            val scale = viewHeight / videoHeight
-            matrix.setScale(scale, scale)
-            // 水平居中
-            val scaledWidth = videoWidth * scale
-            val translateX = (viewWidth - scaledWidth) / 2
-            matrix.postTranslate(translateX, 0f)
+
+        when (scaleType) {
+            ScaleType.FIT_XY -> {
+                // 拉伸铺满整个视图（会变形）— TextureView 默认行为，单位矩阵即可
+                matrix.reset()
+            }
+            ScaleType.CENTER_INSIDE -> {
+                // 保持宽高比，完整显示视频内容，居中并留黑边
+                val scaleX: Float
+                val scaleY: Float
+                if (videoRatio > viewRatio) {
+                    // 视频更宽，以宽度为基准适配
+                    scaleX = 1f
+                    scaleY = viewRatio / videoRatio
+                } else {
+                    // 视频更高，以高度为基准适配
+                    scaleX = videoRatio / viewRatio
+                    scaleY = 1f
+                }
+                matrix.setScale(scaleX, scaleY, viewWidth / 2f, viewHeight / 2f)
+            }
+            ScaleType.CENTER_CROP -> {
+                // 保持宽高比，裁剪视频内容以填充视图
+                val scaleX: Float
+                val scaleY: Float
+                if (videoRatio > viewRatio) {
+                    // 视频更宽，以高度填满，宽度溢出裁剪
+                    scaleX = videoRatio / viewRatio
+                    scaleY = 1f
+                } else {
+                    // 视频更高，以宽度填满，高度溢出裁剪
+                    scaleX = 1f
+                    scaleY = viewRatio / videoRatio
+                }
+                matrix.setScale(scaleX, scaleY, viewWidth / 2f, viewHeight / 2f)
+            }
+            ScaleType.ORIGINAL -> {
+                // 原始尺寸显示，居中
+                val scaleX = videoWidth.toFloat() / viewWidth
+                val scaleY = videoHeight.toFloat() / viewHeight
+                matrix.setScale(scaleX, scaleY, viewWidth / 2f, viewHeight / 2f)
+            }
         }
 
         setTransform(matrix)
-        Log.d(TAG, "调整画面缩放: 视频=${videoWidth}x${videoHeight}, 视图=${viewWidth.toInt()}x${viewHeight.toInt()}")
+        Log.d(TAG, "调整画面缩放: 视频=${videoWidth}x${videoHeight}, 视图=${viewWidth.toInt()}x${viewHeight.toInt()}, 模式=$scaleType")
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {

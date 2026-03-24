@@ -189,7 +189,7 @@ int FFVideoDecoder::dequeueFrame(int64_t &ptsUs, ssize_t &outBufIdx) {
             int32_t w = 0, h = 0;
             AMediaFormat_getInt32(newFormat, AMEDIAFORMAT_KEY_WIDTH, &w);
             AMediaFormat_getInt32(newFormat, AMEDIAFORMAT_KEY_HEIGHT, &h);
-        LOGD("Output format changed: %dx%d", w, h);
+            LOGD("Output format changed: %dx%d", w, h);
             AMediaFormat_delete(newFormat);
         }
         return 1; // Need to try again

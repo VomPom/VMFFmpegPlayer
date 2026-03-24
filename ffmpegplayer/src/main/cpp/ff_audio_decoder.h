@@ -25,6 +25,7 @@ extern "C" {
 class FFAudioDecoder {
 public:
     FFAudioDecoder();
+
     ~FFAudioDecoder();
 
     /**
@@ -96,7 +97,9 @@ private:
     int outChannels = 2;
 
     void initOpenSLES();
+
     static void bufferQueueCallback(SLAndroidSimpleBufferQueueItf bq, void *context);
+
     void onBufferQueueCallback();
 };
 
