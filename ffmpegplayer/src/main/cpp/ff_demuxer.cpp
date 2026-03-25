@@ -14,8 +14,31 @@ FFDemuxer::~FFDemuxer() {
 
 int FFDemuxer::open(const char *path) {
     std::lock_guard<std::mutex> lock(readMutex);
+    resetAbort();
 
-    int ret = avformat_open_input(&formatCtx, path, nullptr, nullptr);
+    bool isNetwork = isNetworkUrl(path);
+    AVDictionary *opts = nullptr;
+
+    if (isNetwork) {
+        // 为网络流分配 context 并设置中断回调
+        formatCtx = avformat_alloc_context();
+        if (!formatCtx) {
+            LOGE("Failed to alloc AVFormatContext");
+            return AVERROR(ENOMEM);
+        }
+        formatCtx->interrupt_callback.callback = interruptCallback;
+        formatCtx->interrupt_callback.opaque = this;
+
+        // 网络超时及重连参数
+        av_dict_set(&opts, "timeout", "10000000", 0);       // 连接超时 10 秒（微秒）
+        av_dict_set(&opts, "reconnect", "1", 0);             // 断线自动重连
+        av_dict_set(&opts, "reconnect_streamed", "1", 0);    // 流式传输也重连
+        av_dict_set(&opts, "reconnect_delay_max", "5", 0);   // 最大重连延迟 5 秒
+        LOGD("Opening network URL: %s", path);
+    }
+
+    int ret = avformat_open_input(&formatCtx, path, nullptr, &opts);
+    av_dict_free(&opts);
     if (ret < 0) {
         char errBuf[128];
         av_strerror(ret, errBuf, sizeof(errBuf));
@@ -185,4 +208,31 @@ AVRational FFDemuxer::getVideoTimeBase() const {
 AVRational FFDemuxer::getAudioTimeBase() const {
     if (!formatCtx || audioStreamIndex < 0) return {1, 1000000};
     return formatCtx->streams[audioStreamIndex]->time_base;
+}
+
+void FFDemuxer::abort() {
+    aborted_.store(true);
+    LOGD("Demuxer abort requested");
+}
+
+void FFDemuxer::resetAbort() {
+    aborted_.store(false);
+}
+
+bool FFDemuxer::isNetworkUrl(const char *path) {
+    if (!path) return false;
+    return strncmp(path, "http://", 7) == 0 ||
+           strncmp(path, "https://", 8) == 0 ||
+           strncmp(path, "rtmp://", 7) == 0 ||
+           strncmp(path, "rtsp://", 7) == 0 ||
+           strncmp(path, "hls://", 6) == 0;
+}
+
+int FFDemuxer::interruptCallback(void *ctx) {
+    auto *demuxer = static_cast<FFDemuxer *>(ctx);
+    if (demuxer && demuxer->aborted_.load()) {
+        LOGD("interruptCallback: aborted");
+        return 1; // 返回 1 表示中断 IO
+    }
+    return 0;
 }

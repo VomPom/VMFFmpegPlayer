@@ -44,6 +44,66 @@ mkdir -p "$JNILIBS_DIR/arm64-v8a"
 mkdir -p "$JNILIBS_DIR/armeabi-v7a"
 mkdir -p "$BUILD_DIR"
 
+# -------- 下载并编译 OpenSSL (HTTPS 支持) --------
+OPENSSL_VERSION="3.2.1"
+OPENSSL_URL="https://www.openssl.org/source/openssl-${OPENSSL_VERSION}.tar.gz"
+OPENSSL_SRC="$BUILD_DIR/openssl-${OPENSSL_VERSION}"
+OPENSSL_OUTPUT="$BUILD_DIR/openssl_output"
+
+build_openssl() {
+    local ARCH=$1
+    local ABI=$2
+    local ANDROID_TARGET=$3
+
+    local PREFIX="$OPENSSL_OUTPUT/$ABI"
+    if [ -f "$PREFIX/lib/libssl.so" ]; then
+        echo "✅ OpenSSL ($ABI) 已编译，跳过"
+        return 0
+    fi
+
+    echo ""
+    echo "=========================================="
+    echo "🔐 编译 OpenSSL for $ABI"
+    echo "=========================================="
+
+    cd "$OPENSSL_SRC"
+    make clean 2>/dev/null || true
+
+    export ANDROID_NDK_ROOT="$NDK_PATH"
+    export PATH="$TOOLCHAIN/bin:$PATH"
+
+    ./Configure "$ANDROID_TARGET" \
+        -D__ANDROID_API__=$API \
+        --prefix="$PREFIX" \
+        shared \
+        no-tests \
+        no-comp \
+        no-engine \
+        no-dso
+
+    make -j$(sysctl -n hw.ncpu)
+    make install_sw
+
+    echo "✅ OpenSSL ($ABI) 编译完成: $PREFIX"
+}
+
+# 下载 OpenSSL 源码
+if [ ! -d "$OPENSSL_SRC" ]; then
+    echo "📦 下载 OpenSSL $OPENSSL_VERSION ..."
+    cd "$BUILD_DIR"
+    if [ ! -f "openssl-${OPENSSL_VERSION}.tar.gz" ]; then
+        curl -L -o "openssl-${OPENSSL_VERSION}.tar.gz" "$OPENSSL_URL"
+    fi
+    echo "📂 解压..."
+    tar xzf "openssl-${OPENSSL_VERSION}.tar.gz"
+else
+    echo "✅ OpenSSL 源码已存在: $OPENSSL_SRC"
+fi
+
+# 编译 OpenSSL for arm64-v8a 和 armeabi-v7a
+build_openssl "aarch64" "arm64-v8a" "android-arm64"
+build_openssl "arm" "armeabi-v7a" "android-arm"
+
 # -------- 下载 FFmpeg 源码 --------
 FFMPEG_SRC="$BUILD_DIR/ffmpeg-${FFMPEG_VERSION}"
 if [ ! -d "$FFMPEG_SRC" ]; then
@@ -68,6 +128,7 @@ build_ffmpeg() {
     local EXTRA_LDFLAGS=$6
 
     local PREFIX="$BUILD_DIR/output/$ABI"
+    local SSL_PREFIX="$OPENSSL_OUTPUT/$ABI"
 
     echo ""
     echo "=========================================="
@@ -83,7 +144,6 @@ build_ffmpeg() {
         --prefix="$PREFIX" \
         --target-os=android \
         --arch="$ARCH" \
-        --cpu="$ARCH" \
         --cc="${TOOLCHAIN}/bin/${CC_PREFIX}${API}-clang" \
         --cxx="${TOOLCHAIN}/bin/${CC_PREFIX}${API}-clang++" \
         --cross-prefix="${TOOLCHAIN}/bin/${CROSS_PREFIX}-" \
@@ -124,26 +184,40 @@ build_ffmpeg() {
         --enable-demuxer=mp3 \
         --enable-demuxer=aac \
         --enable-demuxer=wav \
+        --enable-openssl \
         --enable-protocol=file \
         --enable-protocol=fd \
         --enable-protocol=pipe \
+        --enable-protocol=http \
+        --enable-protocol=https \
+        --enable-protocol=tls \
+        --enable-protocol=tcp \
+        --enable-protocol=udp \
+        --enable-demuxer=hls \
         --enable-parser=h264 \
         --enable-parser=hevc \
         --enable-parser=aac \
         --enable-parser=mpegaudio \
         --enable-small \
-        --extra-cflags="$EXTRA_CFLAGS" \
-        --extra-ldflags="$EXTRA_LDFLAGS" \
+        --extra-cflags="$EXTRA_CFLAGS -I$SSL_PREFIX/include" \
+        --extra-ldflags="$EXTRA_LDFLAGS -L$SSL_PREFIX/lib" \
         --pkg-config=/dev/null
 
     echo "🔨 编译中 ($ABI)..."
     make -j$(sysctl -n hw.ncpu)
     make install
 
-    # 复制 .so 到项目目录
+    # 复制 FFmpeg .so 到项目目录
     echo "📁 复制 .so 到项目目录 ($ABI)..."
     cp -f "$PREFIX/lib/"*.so "$OUTPUT_DIR/libs/$ABI/"
     cp -f "$PREFIX/lib/"*.so "$JNILIBS_DIR/$ABI/"
+
+    # 复制 OpenSSL .so 到项目目录
+    echo "📁 复制 OpenSSL .so 到项目目录 ($ABI)..."
+    cp -f "$SSL_PREFIX/lib/libssl.so"* "$OUTPUT_DIR/libs/$ABI/" 2>/dev/null || true
+    cp -f "$SSL_PREFIX/lib/libcrypto.so"* "$OUTPUT_DIR/libs/$ABI/" 2>/dev/null || true
+    cp -f "$SSL_PREFIX/lib/libssl.so"* "$JNILIBS_DIR/$ABI/" 2>/dev/null || true
+    cp -f "$SSL_PREFIX/lib/libcrypto.so"* "$JNILIBS_DIR/$ABI/" 2>/dev/null || true
 
     echo "✅ $ABI 编译完成!"
 }

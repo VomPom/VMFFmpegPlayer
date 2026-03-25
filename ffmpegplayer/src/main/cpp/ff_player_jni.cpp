@@ -5,6 +5,10 @@
 
 #include "ff_player_context.h"
 
+extern "C" {
+#include <libavformat/avformat.h>
+}
+
 #define LOG_TAG "FFPlayerJNI"
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
@@ -158,6 +162,9 @@ JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *reserved) {
         LOGE("JNI_OnLoad: GetEnv failed");
         return JNI_ERR;
     }
+
+    // 初始化 FFmpeg 网络模块，支持 http/rtmp/rtsp 等网络协议播放
+    avformat_network_init();
 
     jclass clazz = env->FindClass(CLASS_NAME);
     if (!clazz) {

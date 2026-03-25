@@ -336,6 +336,11 @@ void FFPlayerContext::stop() {
     // Set abort flag
     abortRequest_.store(true);
 
+    // 中断 demuxer 的网络 IO，避免阻塞在网络读取上
+    if (demuxer_) {
+        demuxer_->abort();
+    }
+
     // Notify queues to stop
     videoQueue_.abort();
     audioQueue_.abort();
@@ -417,6 +422,11 @@ void FFPlayerContext::reset() {
 void FFPlayerContext::release() {
     if (state_.load() == FFPlayerState::PLAYING || state_.load() == FFPlayerState::PAUSED) {
         stop();
+    }
+
+    // 确保 demuxer 网络 IO 已中断
+    if (demuxer_) {
+        demuxer_->abort();
     }
 
     if (videoDecoder_) {

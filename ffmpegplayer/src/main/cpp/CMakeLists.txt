@@ -33,6 +33,16 @@ add_library(swscale SHARED IMPORTED)
 set_target_properties(swscale PROPERTIES
     IMPORTED_LOCATION ${FFMPEG_DIR}/libs/${ANDROID_ABI}/libswscale.so)
 
+# OpenSSL libssl (HTTPS 支持)
+add_library(ssl SHARED IMPORTED)
+set_target_properties(ssl PROPERTIES
+    IMPORTED_LOCATION ${FFMPEG_DIR}/libs/${ANDROID_ABI}/libssl.so)
+
+# OpenSSL libcrypto
+add_library(crypto SHARED IMPORTED)
+set_target_properties(crypto PROPERTIES
+    IMPORTED_LOCATION ${FFMPEG_DIR}/libs/${ANDROID_ABI}/libcrypto.so)
+
 # Project native library
 add_library(ffplayer SHARED
     ff_player_jni.cpp
@@ -56,6 +66,8 @@ target_link_libraries(ffplayer
     avutil
     swresample
     swscale
+    ssl
+    crypto
     ${log-lib}
     ${android-lib}
     ${mediandk-lib}

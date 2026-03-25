@@ -8,6 +8,8 @@ extern "C" {
 
 #include <string>
 #include <mutex>
+#include <atomic>
+#include <cstring>
 
 /**
  * FFmpeg Demuxer
@@ -50,6 +52,22 @@ public:
     /** Close and release resources */
     void close();
 
+    /**
+     * 设置中断标志，用于中断网络 IO 操作
+     * 调用后，正在进行的网络读取会尽快返回错误
+     */
+    void abort();
+
+    /**
+     * 重置中断标志
+     */
+    void resetAbort();
+
+    /**
+     * 判断是否为网络 URL
+     */
+    static bool isNetworkUrl(const char *path);
+
     // Stream info access
     int getVideoStreamIndex() const { return videoStreamIndex; }
 
@@ -82,6 +100,10 @@ private:
     int videoStreamIndex = -1;
     int audioStreamIndex = -1;
     std::mutex readMutex;
+    std::atomic<bool> aborted_{false};  // 中断标志，用于中断网络 IO
+
+    /** FFmpeg 中断回调函数 */
+    static int interruptCallback(void *ctx);
 };
 
 #endif // FFMPEG_PLAYER_FF_DEMUXER_H
