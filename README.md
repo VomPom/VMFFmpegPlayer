@@ -8,7 +8,9 @@
 -  **音频软解码**：FFmpeg 软解 AAC / MP3 等音频格式，OpenSL ES 低延迟输出
 -  **音视频同步**：基于音频时钟的 A/V 同步策略
 -  **完整播放控制**：播放、暂停、恢复、停止、Seek、重置
+-  **变速播放**：支持 0.25x ~ 4.0x 快慢放，基于可扩展的特效框架实现
 -  **画面自适应**：TextureView + Matrix 变换，自动适配视频宽高比
+-  **特效框架**：可扩展的特效管线架构（lib_effect），支持时间轴/音频/视频像素/转场四类特效
 -  **JNI 动态注册**：使用 `JNI_OnLoad` 动态注册 Native 方法
 
 ## 架构
@@ -42,8 +44,8 @@
 ### 1. 克隆项目
 
 ```bash
-git clone <repository-url>
-cd FFmpegPlayer
+git clone https://github.com/VomPom/VMFFmpegPlayer.git
+cd VMFFmpegPlayer
 ```
 
 ### 2. 编译 FFmpeg（如需从源码重新编译）
@@ -62,7 +64,7 @@ bash build_ffmpeg.sh
 
 FFmpeg 编译已启用的关键功能：
 - **解码器**：h264, hevc, h264_mediacodec, hevc_mediacodec, aac, mp3, pcm_s16le
-- **解封装器**：mov, mp4, matroska, mpegts, flv, avi, mp3, aac, wav
+- **解封装器**：mov, mp4, mpegts, flv, avi, mp3, aac, wav
 - **协议**：file, fd, pipe
 - **解析器**：h264, hevc, aac, mpegaudio
 
@@ -107,6 +109,11 @@ player.seekTo(positionMs)     // Seek 到指定位置（毫秒）
 player.stop()                 // 停止
 player.reset()                // 重置（可重新 prepare）
 player.release()              // 释放资源
+
+// 变速播放（0.25x ~ 4.0x）
+player.setSpeed(2.0f)         // 2倍速播放
+player.setSpeed(0.5f)         // 0.5倍慢放
+player.getSpeed()             // 获取当前速度
 
 // 画面适配模式设置
 playerView.setScaleType(FFPlayerView.ScaleType.CENTER_INSIDE)  // 居中显示（默认）

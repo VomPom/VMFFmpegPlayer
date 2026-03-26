@@ -22,6 +22,8 @@ extern "C" {
 #include "ff_video_decoder.h"
 #include "ff_audio_decoder.h"
 #include "ff_av_sync.h"
+#include "effect_pipeline.h"
+#include "speed_effect.h"
 
 /**
  * Player State Enum
@@ -84,6 +86,16 @@ public:
 
     int getVideoHeight();
 
+    // 特效控制
+    /** 设置播放速度 (0.25 ~ 4.0) */
+    void setSpeed(float speed);
+
+    /** 获取当前播放速度 */
+    float getSpeed();
+
+    /** 获取特效管线（供高级用法） */
+    EffectPipeline *getEffectPipeline() { return effectPipeline_; }
+
 private:
     // Java VM and callback object
     JavaVM *javaVM_ = nullptr;
@@ -94,6 +106,10 @@ private:
     FFVideoDecoder *videoDecoder_ = nullptr;
     FFAudioDecoder *audioDecoder_ = nullptr;
     FFAVSync *avSync_ = nullptr;
+
+    // 特效管线
+    EffectPipeline *effectPipeline_ = nullptr;
+    std::shared_ptr<SpeedEffect> speedEffect_;  // 内置变速特效（快捷引用）
 
     // Worker threads
     std::thread readThread_;

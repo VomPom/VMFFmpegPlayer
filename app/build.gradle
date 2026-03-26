@@ -49,4 +49,5 @@ dependencies {
     implementation Deps.androidx.constraintlayout
     implementation Deps.google.gson
     implementation project(':ffmpegplayer')
+    implementation project(':lib_effect')
 }

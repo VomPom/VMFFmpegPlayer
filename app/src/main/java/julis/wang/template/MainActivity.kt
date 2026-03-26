@@ -6,14 +6,17 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.SeekBar
+import android.widget.Spinner
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.vompom.ffmpegplayer.FFPlayer
 import com.vompom.ffmpegplayer.FFPlayerView
+import android.widget.AdapterView
 import java.io.File
 import java.io.FileOutputStream
 import java.util.concurrent.TimeUnit
@@ -23,9 +26,12 @@ class MainActivity : AppCompatActivity(), FFPlayer.Listener {
     companion object {
         private const val TAG = "MainActivity"
         private const val REQUEST_PERMISSION_CODE = 100
-        // 使用assets中的本地视频文件，因为FFmpeg没有启用HTTP/HTTPS协议
-        private const val SAMPLE_VIDEO_PATH = "sample.mp4"
     }
+
+    // 视频源列表：显示名称 -> 播放地址
+    private data class VideoSource(val name: String, val url: String)
+
+    private val videoSources = mutableListOf<VideoSource>()
 
     private lateinit var playerView: FFPlayerView
     private lateinit var seekBar: SeekBar
@@ -33,10 +39,13 @@ class MainActivity : AppCompatActivity(), FFPlayer.Listener {
     private lateinit var totalTimeText: TextView
     private lateinit var playPauseButton: Button
     private lateinit var scaleModeButton: Button
+    private lateinit var videoSpinner: Spinner
     private lateinit var statusText: TextView
 
     private var player: FFPlayer? = null
     private var isSeeking = false
+    private var currentVideoIndex = 0
+    private var isUserSelectingVideo = false
     private val updateHandler = Handler(Looper.getMainLooper())
     private val updateRunnable = object : Runnable {
         override fun run() {
@@ -62,9 +71,69 @@ class MainActivity : AppCompatActivity(), FFPlayer.Listener {
         totalTimeText = findViewById(R.id.totalTimeText)
         playPauseButton = findViewById(R.id.playPauseButton)
         scaleModeButton = findViewById(R.id.scaleModeButton)
+        videoSpinner = findViewById(R.id.videoSpinner)
         statusText = findViewById(R.id.statusText)
 
+        initVideoSources()
+        setupVideoSpinner()
         setupListeners()
+    }
+
+    /**
+     * 初始化视频源列表
+     */
+    private fun initVideoSources() {
+        videoSources += listOf(
+            // 本地视频（assets 目录中的不同格式文件）
+            VideoSource("本地视频 (sample.mp4)", "sample.mp4"),
+            VideoSource("本地视频 (hdr10-720p.mp4)", "hdr10-720p.mp4"),
+            // 远程视频
+            VideoSource(
+                "远程视频 1",
+                "https://user-images.githubusercontent.com/28951144/229373720-14d69157-1a56-4a78-a2f4-d7a134d7c3e9.mp4"
+            ),
+            VideoSource(
+                "远程视频 2",
+                "https://user-images.githubusercontent.com/28951144/229373695-22f88f13-d18f-4288-9bf1-c3e078d83722.mp4"
+            ),
+            VideoSource(
+                "远程视频 3",
+                "https://user-images.githubusercontent.com/28951144/229373709-603a7a89-2105-4e1b-a5a5-a6c3567c9a59.mp4"
+            ),
+            VideoSource(
+                "远程视频 4",
+                "https://user-images.githubusercontent.com/28951144/229373716-76da0a4e-225a-44e4-9ee7-3e9006dbc3e3.mp4"
+            ),
+            VideoSource(
+                "远程视频 5",
+                "https://user-images.githubusercontent.com/28951144/229373718-86ce5e1d-d195-45d5-baa6-ef94041d0b90.mp4"
+            ),
+        )
+    }
+
+    /**
+     * 初始化视频选择下拉列表
+     */
+    private fun setupVideoSpinner() {
+        val names = videoSources.map { it.name }
+        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, names)
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        videoSpinner.adapter = adapter
+
+        videoSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: android.view.View?, position: Int, id: Long) {
+                if (!isUserSelectingVideo) {
+                    isUserSelectingVideo = true
+                    return
+                }
+                if (position != currentVideoIndex) {
+                    currentVideoIndex = position
+                    switchVideo(position)
+                }
+            }
+
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
+        }
     }
 
     private fun setupListeners() {
@@ -114,7 +183,7 @@ class MainActivity : AppCompatActivity(), FFPlayer.Listener {
         }
 
         playerView.bindPlayer(player!!)
-        
+
         // Surface 就绪后再加载视频，确保 prepare 时 Surface 已经设置
         playerView.onSurfaceReady = {
             Log.d(TAG, "Surface 就绪")
@@ -123,7 +192,7 @@ class MainActivity : AppCompatActivity(), FFPlayer.Listener {
                 loadVideo()
             }
         }
-        
+
         // 设置视频尺寸变化回调
         playerView.onVideoSizeChanged = { width, height ->
             runOnUiThread {
@@ -131,7 +200,7 @@ class MainActivity : AppCompatActivity(), FFPlayer.Listener {
                 Log.d(TAG, "视频尺寸变化: ${width}x${height}")
             }
         }
-        
+
         statusText.text = "播放器初始化完成"
     }
 
@@ -180,26 +249,56 @@ class MainActivity : AppCompatActivity(), FFPlayer.Listener {
             statusText.text = "等待 Surface 就绪..."
             return
         }
-        
+
         try {
-            // 从assets加载本地视频文件
-            val assetManager = assets
-            val inputStream = assetManager.open(SAMPLE_VIDEO_PATH)
-            val cacheFile = File(cacheDir, SAMPLE_VIDEO_PATH)
-            
-            // 将assets中的视频复制到缓存目录
-            FileOutputStream(cacheFile).use { output ->
-                inputStream.copyTo(output)
+            val source = videoSources[currentVideoIndex]
+            val path: String
+
+            if (source.url.startsWith("http://") || source.url.startsWith("https://")) {
+                // 远程视频：直接使用 URL
+                path = source.url
+            } else {
+                // 本地视频：从 assets 复制到缓存目录
+                val cacheFile = File(cacheDir, source.url)
+                if (!cacheFile.exists() || cacheFile.length() == 0L) {
+                    assets.open(source.url).use { input ->
+                        FileOutputStream(cacheFile).use { output ->
+                            input.copyTo(output)
+                        }
+                    }
+                }
+                path = cacheFile.absolutePath
             }
-            
-            // 使用本地文件路径
-            player?.setDataSource(cacheFile.absolutePath)
+
+            player?.setDataSource(path)
             player?.prepareAsync()
-            statusText.text = "正在准备视频..."
+
+            statusText.text = "正在准备: ${source.name}"
         } catch (e: Exception) {
             Log.e(TAG, "加载视频失败", e)
             statusText.text = "加载视频失败: ${e.message}"
         }
+    }
+
+    /**
+     * 切换视频源
+     */
+    private fun switchVideo(index: Int) {
+        Log.d(TAG, "切换视频: ${videoSources[index].name}")
+        statusText.text = "切换视频中..."
+
+        // 停止当前播放
+        updateHandler.removeCallbacks(updateRunnable)
+        player?.stop()
+
+        // 重置 UI
+        seekBar.progress = 0
+        currentTimeText.text = "00:00"
+        totalTimeText.text = "00:00"
+        playPauseButton.text = "播放"
+
+        // 加载新视频
+        loadVideo()
     }
 
     private fun togglePlayPause() {
@@ -209,10 +308,12 @@ class MainActivity : AppCompatActivity(), FFPlayer.Listener {
                     it.pause()
                     playPauseButton.text = "播放"
                 }
+
                 FFPlayer.STATE_PAUSED, FFPlayer.STATE_PREPARED -> {
                     it.start()
                     playPauseButton.text = "暂停"
                 }
+
                 FFPlayer.STATE_COMPLETED -> {
                     // 播放完成，重置播放器状态后重新播放
                     Log.d(TAG, "播放完成，开始重置并重新播放")
@@ -220,6 +321,7 @@ class MainActivity : AppCompatActivity(), FFPlayer.Listener {
                     it.start()
                     playPauseButton.text = "暂停"
                 }
+
                 else -> {
                     it.prepareAsync()
                     playPauseButton.text = "准备中..."
@@ -236,7 +338,7 @@ class MainActivity : AppCompatActivity(), FFPlayer.Listener {
             FFPlayerView.ScaleType.FIT_XY -> FFPlayerView.ScaleType.ORIGINAL
             FFPlayerView.ScaleType.ORIGINAL -> FFPlayerView.ScaleType.CENTER_INSIDE
         }
-        
+
         playerView.setScaleType(nextMode)
         scaleModeButton.text = when (nextMode) {
             FFPlayerView.ScaleType.CENTER_INSIDE -> "居中显示"
@@ -332,12 +434,13 @@ class MainActivity : AppCompatActivity(), FFPlayer.Listener {
         Log.d(TAG, "onStateChanged: $stateText")
         runOnUiThread {
             statusText.text = "状态: $stateText"
-            
+
             when (state) {
                 FFPlayer.STATE_PLAYING -> {
                     playPauseButton.text = "暂停"
                     updateHandler.post(updateRunnable)
                 }
+
                 FFPlayer.STATE_PAUSED, FFPlayer.STATE_STOPPED -> {
                     playPauseButton.text = "播放"
                     updateHandler.removeCallbacks(updateRunnable)

@@ -249,6 +249,21 @@ class FFPlayer {
      */
     fun isPlaying(): Boolean = nativeLoaded && getState() == STATE_PLAYING
 
+    /**
+     * 设置播放速度
+     * @param speed 速度因子 (0.25 ~ 4.0)，1.0 为正常速度
+     */
+    fun setSpeed(speed: Float) {
+        if (!nativeLoaded) return
+        nativeSetSpeed(speed)
+    }
+
+    /**
+     * 获取当前播放速度
+     * @return 速度因子，1.0 为正常速度
+     */
+    fun getSpeed(): Float = if (nativeLoaded) nativeGetSpeed() else 1.0f
+
     // ==================== C++ 回调（由 JNI 层调用） ====================
 
     @Suppress("unused")
@@ -315,4 +330,6 @@ class FFPlayer {
     private external fun nativeGetState(): Int
     private external fun nativeGetVideoWidth(): Int
     private external fun nativeGetVideoHeight(): Int
+    private external fun nativeSetSpeed(speed: Float)
+    private external fun nativeGetSpeed(): Float
 }

@@ -131,6 +131,16 @@ static jint nativeGetVideoHeight(JNIEnv *env, jobject thiz) {
     return player ? player->getVideoHeight() : 0;
 }
 
+static void nativeSetSpeed(JNIEnv *env, jobject thiz, jfloat speed) {
+    auto *player = getNativePlayer(env, thiz);
+    if (player) player->setSpeed(speed);
+}
+
+static jfloat nativeGetSpeed(JNIEnv *env, jobject thiz) {
+    auto *player = getNativePlayer(env, thiz);
+    return player ? player->getSpeed() : 1.0f;
+}
+
 // ==================== 动态注册 ====================
 
 static const JNINativeMethod g_methods[] = {
@@ -150,6 +160,8 @@ static const JNINativeMethod g_methods[] = {
         {"nativeGetState",           "()I",                       (void *) nativeGetState},
         {"nativeGetVideoWidth",      "()I",                       (void *) nativeGetVideoWidth},
         {"nativeGetVideoHeight",     "()I",                       (void *) nativeGetVideoHeight},
+        {"nativeSetSpeed",           "(F)V",                      (void *) nativeSetSpeed},
+        {"nativeGetSpeed",           "()F",                       (void *) nativeGetSpeed},
 };
 
 /**

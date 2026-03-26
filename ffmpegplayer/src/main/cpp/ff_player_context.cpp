@@ -66,6 +66,12 @@ int FFPlayerContext::prepare(const std::string &path) {
             delete avSync_;
             avSync_ = nullptr;
         }
+        // 释放特效管线（重新 prepare 时会重建）
+        if (effectPipeline_) {
+            delete effectPipeline_;
+            effectPipeline_ = nullptr;
+        }
+        speedEffect_.reset();
         if (bsfCtx_) {
             av_bsf_free(&bsfCtx_);
             bsfCtx_ = nullptr;
@@ -87,6 +93,15 @@ int FFPlayerContext::prepare(const std::string &path) {
 
     // Create AV sync
     avSync_ = new FFAVSync();
+
+    // 初始化特效管线
+    if (!effectPipeline_) {
+        effectPipeline_ = new EffectPipeline();
+        // 注册内置变速特效
+        speedEffect_ = std::make_shared<SpeedEffect>();
+        effectPipeline_->addEffect(speedEffect_);
+        LOGD("特效管线已初始化，内置变速特效已注册");
+    }
 
     // Create video decoder
     {
@@ -187,6 +202,12 @@ int FFPlayerContext::prepareWithFd(int fd) {
             delete avSync_;
             avSync_ = nullptr;
         }
+        // 释放特效管线（重新 prepare 时会重建）
+        if (effectPipeline_) {
+            delete effectPipeline_;
+            effectPipeline_ = nullptr;
+        }
+        speedEffect_.reset();
         if (bsfCtx_) {
             av_bsf_free(&bsfCtx_);
             bsfCtx_ = nullptr;
@@ -205,6 +226,13 @@ int FFPlayerContext::prepareWithFd(int fd) {
     }
 
     avSync_ = new FFAVSync();
+
+    // 初始化特效管线
+    if (!effectPipeline_) {
+        effectPipeline_ = new EffectPipeline();
+        speedEffect_ = std::make_shared<SpeedEffect>();
+        effectPipeline_->addEffect(speedEffect_);
+    }
 
     {
         std::lock_guard<std::mutex> lock(surfaceMutex_);
@@ -412,6 +440,11 @@ void FFPlayerContext::reset() {
         avSync_->reset();
     }
 
+    // 重置特效管线状态
+    if (effectPipeline_) {
+        effectPipeline_->resetAll();
+    }
+
     // Reset state to PREPARED so start() can be called directly
     state_.store(FFPlayerState::PREPARED);
     notifyStateChanged((int) FFPlayerState::PREPARED);
@@ -451,6 +484,13 @@ void FFPlayerContext::release() {
         delete avSync_;
         avSync_ = nullptr;
     }
+
+    // 释放特效管线
+    if (effectPipeline_) {
+        delete effectPipeline_;
+        effectPipeline_ = nullptr;
+    }
+    speedEffect_.reset();
 
     if (bsfCtx_) {
         av_bsf_free(&bsfCtx_);
@@ -804,17 +844,44 @@ void FFPlayerContext::videoThreadFunc() {
                 seekTargetUs_.store(-1);
             }
 
-            // AV sync decision
+            // ==================== 特效管线处理 ====================
+            // 通过特效管线处理视频帧时间轴（变速等时间类特效在此生效）
+            int64_t effectivePtsUs = ptsUs;
+            float currentSpeed = 1.0f;
+            if (effectPipeline_) {
+                TimeEffectResult timeResult;
+                effectPipeline_->processVideoTime(ptsUs, timeResult);
+                effectivePtsUs = timeResult.adjustedPtsUs;
+                currentSpeed = timeResult.speedFactor;
+
+                // 特效要求丢弃该帧
+                if (timeResult.shouldDrop) {
+                    videoDecoder_->releaseFrame(bufIdx, false);
+                    continue;
+                }
+            }
+
+            // AV sync decision（使用特效处理后的 PTS）
             bool shouldRender = true;
             if (avSync_ && audioDecoder_) {
                 int64_t audioClk = audioDecoder_->getAudioClockUs();
                 if (audioClk > 0) {
+                    // 变速时需要将音频时钟也映射到调整后的时间轴
+                    // 音频时钟反映的是原始时间轴上的位置，需要除以速度因子
+                    int64_t adjustedAudioClk = audioClk;
+                    if (currentSpeed != 1.0f && currentSpeed > 0.0f) {
+                        // 音频实际播放速度也会变化，所以直接用原始 PTS 和原始音频时钟做同步
+                        // 但帧间等待时间需要除以速度因子
+                    }
+
                     int64_t waitUs = 0;
                     auto action = avSync_->sync(ptsUs, audioClk, waitUs);
                     if (action == FFAVSync::WAIT && waitUs > 0) {
+                        // 变速时调整等待时间：快放缩短等待，慢放拉长等待
+                        int64_t adjustedWaitUs = (int64_t) ((double) waitUs / (double) currentSpeed);
                         // Video ahead, wait before rendering
                         // Segmented sleep to respond to abort requests promptly
-                        int64_t remaining = std::min(waitUs, (int64_t) 100000);
+                        int64_t remaining = std::min(adjustedWaitUs, (int64_t) 100000);
                         while (remaining > 0 && !abortRequest_.load()) {
                             int64_t sleepTime = std::min(remaining, (int64_t) 5000);
                             usleep((useconds_t) sleepTime);
@@ -830,6 +897,10 @@ void FFPlayerContext::videoThreadFunc() {
                     // Audio clock not yet updated (just started), use PTS-based frame rate control
                     if (lastPtsUs > 0 && ptsUs > lastPtsUs) {
                         int64_t frameDuration = ptsUs - lastPtsUs;
+                        // 变速时调整帧间隔
+                        if (currentSpeed != 1.0f && currentSpeed > 0.0f) {
+                            frameDuration = (int64_t) ((double) frameDuration / (double) currentSpeed);
+                        }
                         if (frameDuration > 0 && frameDuration < 1000000) {
                             usleep((useconds_t) frameDuration);
                         }
@@ -841,6 +912,11 @@ void FFPlayerContext::videoThreadFunc() {
                 static int64_t lastFrameTime = av_gettime();
                 int64_t currentTime = av_gettime();
                 int64_t frameDuration = ptsUs - lastPtsUs;
+
+                // 变速时调整帧间隔
+                if (currentSpeed != 1.0f && currentSpeed > 0.0f) {
+                    frameDuration = (int64_t) ((double) frameDuration / (double) currentSpeed);
+                }
 
                 if (frameDuration > 0 && frameDuration < 1000000) { // Ensure reasonable frame interval (<1s)
                     int64_t elapsed = currentTime - lastFrameTime;
@@ -911,6 +987,22 @@ void FFPlayerContext::audioThreadFunc() {
     }
 
     LOGD("Audio thread exited");
+}
+
+// ==================== 特效控制 ====================
+
+void FFPlayerContext::setSpeed(float speed) {
+    if (speedEffect_) {
+        speedEffect_->setSpeed(speed);
+        LOGI("播放速度设置为: %.2f", speed);
+    }
+}
+
+float FFPlayerContext::getSpeed() {
+    if (speedEffect_) {
+        return speedEffect_->getSpeedFactor();
+    }
+    return 1.0f;
 }
 
 // ==================== Java Callbacks ====================

@@ -1,0 +1,67 @@
+plugins {
+    id 'com.android.library'
+}
+apply plugin: 'kotlin-android'
+apply from: '../repos.gradle'
+apply from: '../deps.gradle'
+
+android {
+    compileSdkVersion Ver.compile_sdk
+    buildToolsVersion Ver.build_tools
+
+    defaultConfig {
+        minSdkVersion Ver.min_sdk
+        targetSdkVersion Ver.target_sdk
+        namespace 'com.vompom.effect'
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        consumerProguardFiles "consumer-rules.pro"
+
+        externalNativeBuild {
+            cmake {
+                cppFlags "-std=c++17 -frtti -fexceptions"
+                arguments "-DANDROID_STL=c++_shared"
+                abiFilters "arm64-v8a"
+            }
+        }
+
+        ndk {
+            abiFilters "arm64-v8a"
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path "src/main/cpp/CMakeLists.txt"
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
+    }
+
+    kotlinOptions {
+        jvmTarget = '11'
+    }
+
+    sourceSets {
+        main {
+            jniLibs.srcDirs = ['src/main/jniLibs']
+        }
+    }
+
+    ndkVersion '21.4.7075529'
+}
+
+dependencies {
+    implementation Deps.kotlin.stdlib
+    implementation Deps.androidx.appcompat
+    implementation Deps.androidx.annotation
+}

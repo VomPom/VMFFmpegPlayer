@@ -1,3 +1,4 @@
 rootProject.name = "VMFFmpegPlayer"
 include ':app'
 include ':ffmpegplayer'
+include ':lib_effect'

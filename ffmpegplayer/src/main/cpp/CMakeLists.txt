@@ -4,8 +4,14 @@ project("ffmpegplayer")
 # FFmpeg prebuilt library path
 set(FFMPEG_DIR ${CMAKE_SOURCE_DIR}/ffmpeg)
 
+# lib_effect 特效框架路径
+set(EFFECT_DIR ${CMAKE_SOURCE_DIR}/../../../../lib_effect/src/main/cpp)
+
 # Add FFmpeg header file path
 include_directories(${FFMPEG_DIR}/include)
+
+# 添加 lib_effect 头文件路径
+include_directories(${EFFECT_DIR})
 
 # Define FFmpeg libraries
 # libavformat
@@ -51,6 +57,9 @@ add_library(ffplayer SHARED
     ff_video_decoder.cpp
     ff_audio_decoder.cpp
     ff_av_sync.cpp
+    # lib_effect 特效框架源文件
+    ${EFFECT_DIR}/effect_pipeline.cpp
+    ${EFFECT_DIR}/speed_effect.cpp
 )
 
 # Find system libraries
