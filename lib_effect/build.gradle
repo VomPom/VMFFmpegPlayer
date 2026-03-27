@@ -64,4 +64,6 @@ dependencies {
     implementation Deps.kotlin.stdlib
     implementation Deps.androidx.appcompat
     implementation Deps.androidx.annotation
+    // 依赖播放器模块（用于 EffectManager 与 FFPlayer 交互）
+    implementation project(':ffmpegplayer')
 }

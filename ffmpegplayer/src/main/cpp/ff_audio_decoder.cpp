@@ -1,10 +1,8 @@
 #include "ff_audio_decoder.h"
-#include <android/log.h>
 #include <cstring>
 
 #define LOG_TAG "FFAudioDecoder"
-#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+#include "ff_log.h"
 
 FFAudioDecoder::FFAudioDecoder() {
 }
@@ -17,6 +15,10 @@ int FFAudioDecoder::init(AVCodecParameters *codecParams) {
     if (!codecParams) return -1;
 
     eos.store(false);
+
+    // 保存编解码参数，用于后续重建 SwrContext
+    savedCodecParams_ = avcodec_parameters_alloc();
+    avcodec_parameters_copy(savedCodecParams_, codecParams);
 
     // Find decoder
     const AVCodec *codec = avcodec_find_decoder(codecParams->codec_id);
@@ -175,7 +177,13 @@ int FFAudioDecoder::sendPacket(AVPacket *packet) {
 }
 
 int FFAudioDecoder::decodeFrame() {
-    if (!codecCtx) return -1;
+    if (!codecCtx || aborted_.load()) return -1;
+
+    // 检查是否需要重建 SwrContext（速度变化时）
+    if (needRebuildSwr_.load()) {
+        needRebuildSwr_.store(false);
+        rebuildSwrContext();
+    }
 
     AVFrame *frame = av_frame_alloc();
     int ret = avcodec_receive_frame(codecCtx, frame);
@@ -202,6 +210,8 @@ int FFAudioDecoder::decodeFrame() {
             audioBuf.data.resize(actualSize);
 
             // Calculate PTS (already converted to microseconds in readThreadFunc)
+            // 变速时音频 PTS 仍然使用原始值，因为音频时钟需要反映真实播放进度
+            // OpenSL ES 以固定采样率播放变速后的数据，时钟自然会加速/减速推进
             if (frame->pts != AV_NOPTS_VALUE) {
                 audioBuf.ptsUs = frame->pts;
             }
@@ -209,8 +219,12 @@ int FFAudioDecoder::decodeFrame() {
             // Push to playback queue
             std::unique_lock<std::mutex> lock(queueMutex);
             // Limit queue size to avoid memory explosion
-            while (bufferQueue.size() >= 16) {
+            while (bufferQueue.size() >= 16 && !aborted_.load()) {
                 queueCond.wait_for(lock, std::chrono::milliseconds(10));
+            }
+            if (aborted_.load()) {
+                av_frame_free(&frame);
+                return -1;
             }
             bufferQueue.push(std::move(audioBuf));
         }
@@ -245,6 +259,13 @@ void FFAudioDecoder::resume() {
     }
 }
 
+void FFAudioDecoder::abort() {
+    aborted_.store(true);
+    // 唤醒所有在 bufferQueue 上等待的线程
+    queueCond.notify_all();
+    LOGD("Audio decoder abort requested");
+}
+
 void FFAudioDecoder::flush() {
     if (codecCtx) {
         avcodec_flush_buffers(codecCtx);
@@ -260,6 +281,7 @@ void FFAudioDecoder::flush() {
     // Reset audio clock
     audioClockUs.store(0);
     eos.store(false);
+    aborted_.store(false);
 
     // Restart OpenSL ES callback chain: re-enqueue a silence buffer
     if (bufferQueueItf) {
@@ -318,5 +340,67 @@ void FFAudioDecoder::release() {
     }
 
     eos.store(false);
+    aborted_.store(false);
+
+    // 释放保存的编解码参数
+    if (savedCodecParams_) {
+        avcodec_parameters_free(&savedCodecParams_);
+        savedCodecParams_ = nullptr;
+    }
+
     LOGD("Audio decoder released");
+}
+
+void FFAudioDecoder::setSpeed(float speed) {
+    float clampedSpeed = std::max(0.25f, std::min(4.0f, speed));
+    float oldSpeed = currentSpeed_.load();
+    if (std::abs(clampedSpeed - oldSpeed) < 0.001f) return;
+
+    currentSpeed_.store(clampedSpeed);
+    needRebuildSwr_.store(true);
+    LOGD("音频变速设置为: %.2f", clampedSpeed);
+}
+
+void FFAudioDecoder::rebuildSwrContext() {
+    if (!codecCtx) return;
+
+    float speed = currentSpeed_.load();
+
+    // 释放旧的 SwrContext
+    if (swrCtx) {
+        swr_free(&swrCtx);
+        swrCtx = nullptr;
+    }
+
+    // 变速原理：
+    // 将输入采样率 "欺骗" 为 inputRate * speed
+    // 这样 SwrContext 会认为输入数据的采样率更高/更低
+    // 输出到固定的 outSampleRate (44100Hz) 时：
+    //   speed > 1.0: 输入 "采样率更高" → 输出样本数更少 → 播放时间更短 → 快放
+    //   speed < 1.0: 输入 "采样率更低" → 输出样本数更多 → 播放时间更长 → 慢放
+    int adjustedInputRate = (int)(codecCtx->sample_rate * speed);
+
+    AVChannelLayout outChLayout;
+    av_channel_layout_default(&outChLayout, outChannels);
+
+    // 创建临时的输入 channel layout（与 codecCtx 相同）
+    AVChannelLayout inChLayout;
+    av_channel_layout_copy(&inChLayout, &codecCtx->ch_layout);
+
+    int ret = swr_alloc_set_opts2(&swrCtx,
+                                  &outChLayout, AV_SAMPLE_FMT_S16, outSampleRate,
+                                  &inChLayout, codecCtx->sample_fmt, adjustedInputRate,
+                                  0, nullptr);
+
+    av_channel_layout_uninit(&outChLayout);
+    av_channel_layout_uninit(&inChLayout);
+
+    if (ret < 0 || !swrCtx) {
+        LOGE("重建 SwrContext 失败, speed=%.2f", speed);
+        return;
+    }
+
+    swr_init(swrCtx);
+    LOGD("SwrContext 已重建: inputRate=%d(adjusted), outputRate=%d, speed=%.2f",
+         adjustedInputRate, outSampleRate, speed);
 }

@@ -12,6 +12,13 @@ target_include_directories(effect PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
+# 引用公共头文件（ff_log.h 等）
+# 使用 get_filename_component 获取项目根目录的绝对路径，避免相对路径在不同构建环境下出错
+get_filename_component(PROJECT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../../" ABSOLUTE)
+target_include_directories(effect PRIVATE
+    ${PROJECT_ROOT}/ffmpegplayer/src/main/cpp
+)
+
 # 查找系统库
 find_library(log-lib log)
 

@@ -1,5 +1,4 @@
 #include <jni.h>
-#include <android/log.h>
 #include <android/native_window_jni.h>
 #include <string>
 
@@ -10,8 +9,7 @@ extern "C" {
 }
 
 #define LOG_TAG "FFPlayerJNI"
-#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+#include "ff_log.h"
 
 // JNI 注册的目标 Java 类
 static const char *CLASS_NAME = "com/vompom/ffmpegplayer/FFPlayer";

@@ -1,10 +1,9 @@
 #include "effect_pipeline.h"
 #include "speed_effect.h"
-#include <android/log.h>
 #include <algorithm>
 
 #define LOG_TAG "EffectPipeline"
-#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
+#include "ff_log.h"
 
 EffectPipeline::EffectPipeline() {
 }

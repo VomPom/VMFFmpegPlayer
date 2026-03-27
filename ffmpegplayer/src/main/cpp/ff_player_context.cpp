@@ -1,11 +1,8 @@
 #include "ff_player_context.h"
-#include <android/log.h>
 #include <unistd.h>
 
 #define LOG_TAG "FFPlayerContext"
-#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#include "ff_log.h"
 
 FFPlayerContext::FFPlayerContext(JavaVM *javaVM, jobject javaPlayer)
         : javaVM_(javaVM) {
@@ -367,6 +364,11 @@ void FFPlayerContext::stop() {
     // 中断 demuxer 的网络 IO，避免阻塞在网络读取上
     if (demuxer_) {
         demuxer_->abort();
+    }
+
+    // 中断音频解码器内部的阻塞等待（bufferQueue 满时的 wait）
+    if (audioDecoder_) {
+        audioDecoder_->abort();
     }
 
     // Notify queues to stop
@@ -866,22 +868,14 @@ void FFPlayerContext::videoThreadFunc() {
             if (avSync_ && audioDecoder_) {
                 int64_t audioClk = audioDecoder_->getAudioClockUs();
                 if (audioClk > 0) {
-                    // 变速时需要将音频时钟也映射到调整后的时间轴
-                    // 音频时钟反映的是原始时间轴上的位置，需要除以速度因子
-                    int64_t adjustedAudioClk = audioClk;
-                    if (currentSpeed != 1.0f && currentSpeed > 0.0f) {
-                        // 音频实际播放速度也会变化，所以直接用原始 PTS 和原始音频时钟做同步
-                        // 但帧间等待时间需要除以速度因子
-                    }
-
+                    // 音频已变速，音频时钟自然会加速/减速推进
+                    // 视频同步直接使用原始 PTS 和音频时钟做对比
                     int64_t waitUs = 0;
                     auto action = avSync_->sync(ptsUs, audioClk, waitUs);
                     if (action == FFAVSync::WAIT && waitUs > 0) {
-                        // 变速时调整等待时间：快放缩短等待，慢放拉长等待
-                        int64_t adjustedWaitUs = (int64_t) ((double) waitUs / (double) currentSpeed);
                         // Video ahead, wait before rendering
                         // Segmented sleep to respond to abort requests promptly
-                        int64_t remaining = std::min(adjustedWaitUs, (int64_t) 100000);
+                        int64_t remaining = std::min(waitUs, (int64_t) 100000);
                         while (remaining > 0 && !abortRequest_.load()) {
                             int64_t sleepTime = std::min(remaining, (int64_t) 5000);
                             usleep((useconds_t) sleepTime);
@@ -995,6 +989,10 @@ void FFPlayerContext::setSpeed(float speed) {
     if (speedEffect_) {
         speedEffect_->setSpeed(speed);
         LOGI("播放速度设置为: %.2f", speed);
+    }
+    // 同步设置音频解码器的播放速度
+    if (audioDecoder_) {
+        audioDecoder_->setSpeed(speed);
     }
 }
 

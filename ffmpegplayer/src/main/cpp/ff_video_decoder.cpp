@@ -1,10 +1,8 @@
 #include "ff_video_decoder.h"
-#include <android/log.h>
 #include <cstring>
 
 #define LOG_TAG "FFVideoDecoder"
-#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+#include "ff_log.h"
 
 // MediaCodec timeout (microseconds)
 static const int64_t DEQUEUE_TIMEOUT_US = 10000; // 10ms

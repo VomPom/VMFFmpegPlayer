@@ -10,6 +10,9 @@ set(EFFECT_DIR ${CMAKE_SOURCE_DIR}/../../../../lib_effect/src/main/cpp)
 # Add FFmpeg header file path
 include_directories(${FFMPEG_DIR}/include)
 
+# 添加本模块头文件路径（ff_log.h 等公共头文件，供 lib_effect 源文件编译时使用）
+include_directories(${CMAKE_SOURCE_DIR})
+
 # 添加 lib_effect 头文件路径
 include_directories(${EFFECT_DIR})
 

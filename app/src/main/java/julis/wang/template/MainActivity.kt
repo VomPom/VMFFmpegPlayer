@@ -17,6 +17,8 @@ import androidx.core.content.ContextCompat
 import com.vompom.ffmpegplayer.FFPlayer
 import com.vompom.ffmpegplayer.FFPlayerView
 import android.widget.AdapterView
+import com.vompom.effect.EffectManager
+import com.vompom.effect.SpeedEffect
 import java.io.File
 import java.io.FileOutputStream
 import java.util.concurrent.TimeUnit
@@ -41,6 +43,13 @@ class MainActivity : AppCompatActivity(), FFPlayer.Listener {
     private lateinit var scaleModeButton: Button
     private lateinit var videoSpinner: Spinner
     private lateinit var statusText: TextView
+    private lateinit var speedText: TextView
+
+    // 速度按钮列表
+    private lateinit var speedButtons: List<Pair<Button, Float>>
+
+    // 特效管理器
+    private var effectManager: EffectManager? = null
 
     private var player: FFPlayer? = null
     private var isSeeking = false
@@ -73,6 +82,19 @@ class MainActivity : AppCompatActivity(), FFPlayer.Listener {
         scaleModeButton = findViewById(R.id.scaleModeButton)
         videoSpinner = findViewById(R.id.videoSpinner)
         statusText = findViewById(R.id.statusText)
+
+        speedText = findViewById(R.id.speedText)
+
+        // 初始化速度按钮
+        speedButtons = listOf(
+            findViewById<Button>(R.id.speed05xBtn) to SpeedEffect.SPEED_0_5X,
+            findViewById<Button>(R.id.speed075xBtn) to SpeedEffect.SPEED_0_75X,
+            findViewById<Button>(R.id.speed1xBtn) to SpeedEffect.SPEED_1X,
+            findViewById<Button>(R.id.speed125xBtn) to SpeedEffect.SPEED_1_25X,
+            findViewById<Button>(R.id.speed15xBtn) to SpeedEffect.SPEED_1_5X,
+            findViewById<Button>(R.id.speed2xBtn) to SpeedEffect.SPEED_2X,
+            findViewById<Button>(R.id.speed3xBtn) to SpeedEffect.SPEED_3X,
+        )
 
         initVideoSources()
         setupVideoSpinner()
@@ -145,6 +167,9 @@ class MainActivity : AppCompatActivity(), FFPlayer.Listener {
             toggleScaleMode()
         }
 
+        // 变速按钮点击事件
+        setupSpeedButtons()
+
         seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                 if (fromUser) {
@@ -170,6 +195,45 @@ class MainActivity : AppCompatActivity(), FFPlayer.Listener {
         })
     }
 
+    /**
+     * 初始化变速按钮
+     */
+    private fun setupSpeedButtons() {
+        for ((button, speed) in speedButtons) {
+            button.setOnClickListener {
+                setPlaybackSpeed(speed)
+            }
+        }
+    }
+
+    /**
+     * 设置播放速度并更新 UI
+     */
+    private fun setPlaybackSpeed(speed: Float) {
+        effectManager?.setSpeed(speed)
+        updateSpeedUI(speed)
+        statusText.text = "播放速度: ${SpeedEffect.getSpeedLabel(speed)}"
+    }
+
+    /**
+     * 更新速度按钮的选中状态
+     */
+    private fun updateSpeedUI(currentSpeed: Float) {
+        speedText.text = SpeedEffect.getSpeedLabel(currentSpeed)
+
+        for ((button, speed) in speedButtons) {
+            if (speed == currentSpeed) {
+                // 选中状态：使用主色调背景
+                button.setBackgroundResource(R.drawable.btn_control_bg)
+                button.setTextColor(0xFFFFFFFF.toInt())
+            } else {
+                // 未选中状态：使用次要背景
+                button.setBackgroundResource(R.drawable.btn_control_secondary_bg)
+                button.setTextColor(0xFF333333.toInt())
+            }
+        }
+    }
+
     private var pendingLoadVideo = false
 
     private fun setupPlayer() {
@@ -181,6 +245,9 @@ class MainActivity : AppCompatActivity(), FFPlayer.Listener {
         player = FFPlayer().apply {
             setListener(this@MainActivity)
         }
+
+        // 初始化特效管理器
+        effectManager = EffectManager(player!!)
 
         playerView.bindPlayer(player!!)
 
@@ -452,6 +519,7 @@ class MainActivity : AppCompatActivity(), FFPlayer.Listener {
     override fun onDestroy() {
         super.onDestroy()
         updateHandler.removeCallbacks(updateRunnable)
+        effectManager = null
         player?.release()
         player = null
     }
