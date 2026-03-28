@@ -44,9 +44,13 @@ class MainActivity : AppCompatActivity(), FFPlayer.Listener {
     private lateinit var videoSpinner: Spinner
     private lateinit var statusText: TextView
     private lateinit var speedText: TextView
+    private lateinit var multiClipButton: Button
 
     // 速度按钮列表
     private lateinit var speedButtons: List<Pair<Button, Float>>
+
+    // 是否处于多片段播放模式
+    private var isMultiClipMode = false
 
     // 特效管理器
     private var effectManager: EffectManager? = null
@@ -84,6 +88,7 @@ class MainActivity : AppCompatActivity(), FFPlayer.Listener {
         statusText = findViewById(R.id.statusText)
 
         speedText = findViewById(R.id.speedText)
+        multiClipButton = findViewById(R.id.multiClipButton)
 
         // 初始化速度按钮
         speedButtons = listOf(
@@ -165,6 +170,10 @@ class MainActivity : AppCompatActivity(), FFPlayer.Listener {
 
         scaleModeButton.setOnClickListener {
             toggleScaleMode()
+        }
+
+        multiClipButton.setOnClickListener {
+            startMultiClipPlayback()
         }
 
         // 变速按钮点击事件
@@ -309,6 +318,9 @@ class MainActivity : AppCompatActivity(), FFPlayer.Listener {
     }
 
     private fun loadVideo() {
+        // 切换回单片段模式
+        isMultiClipMode = false
+
         // 如果 Surface 还没就绪，先标记为待加载，等 Surface 回调后再执行
         if (!playerView.isSurfaceReady) {
             Log.d(TAG, "Surface 未就绪，等待 Surface 回调后再加载视频")
@@ -326,15 +338,7 @@ class MainActivity : AppCompatActivity(), FFPlayer.Listener {
                 path = source.url
             } else {
                 // 本地视频：从 assets 复制到缓存目录
-                val cacheFile = File(cacheDir, source.url)
-                if (!cacheFile.exists() || cacheFile.length() == 0L) {
-                    assets.open(source.url).use { input ->
-                        FileOutputStream(cacheFile).use { output ->
-                            input.copyTo(output)
-                        }
-                    }
-                }
-                path = cacheFile.absolutePath
+                path = copyAssetToCache(source.url)
             }
 
             player?.setDataSource(path)
@@ -348,9 +352,95 @@ class MainActivity : AppCompatActivity(), FFPlayer.Listener {
     }
 
     /**
+     * 多片段串联播放演示
+     * 使用 assets 中的视频文件，各取一段拼接成时间线
+     */
+    private fun startMultiClipPlayback() {
+        Log.d(TAG, "开始多片段串联播放")
+
+        // 如果 Surface 还没就绪，提示用户
+        if (!playerView.isSurfaceReady) {
+            statusText.text = "等待 Surface 就绪..."
+            return
+        }
+
+        // 停止当前播放
+        updateHandler.removeCallbacks(updateRunnable)
+        player?.stop()
+
+        // 重置 UI
+        seekBar.progress = 0
+        currentTimeText.text = "00:00"
+        totalTimeText.text = "00:00"
+        playPauseButton.text = "播放"
+
+        isMultiClipMode = true
+        statusText.text = "准备多片段播放..."
+
+        try {
+            // 将 assets 中的视频复制到缓存目录
+            val video1Path = copyAssetToCache("sample.mp4")
+            val video2Path = copyAssetToCache("hdr10-720p.mp4")
+            val video3Path = copyAssetToCache("8k24fps_300ms.mp4")
+
+            // 构建多片段时间线：
+            // 片段1: sample.mp4 的 0~3 秒 → 时间线 0~3 秒
+            // 片段2: hdr10-720p.mp4 的 0~3 秒 → 时间线 3~6 秒
+            // 片段3: 8k24fps_300ms.mp4 全部（约 0.3 秒） → 时间线 6~6.3 秒
+            val clips = listOf(
+                FFPlayer.ClipInfo(video1Path, 0, 3000, 0, 3000),
+                FFPlayer.ClipInfo(video2Path, 0, 3000, 3000, 6000),
+                FFPlayer.ClipInfo(video3Path, 0, 0, 6000, 6300)  // srcEndMs=0 表示到文件末尾
+            )
+
+            Log.d(TAG, "多片段时间线:")
+            clips.forEachIndexed { i, clip ->
+                Log.d(TAG, "  片段${i + 1}: ${clip.sourcePath.substringAfterLast('/')} " +
+                        "src[${clip.srcStartMs}-${clip.srcEndMs}ms] → timeline[${clip.timelineStartMs}-${clip.timelineEndMs}ms]")
+            }
+
+            // 使用 prepareTimeline 接口
+            Thread {
+                val ret = player?.prepareTimeline(clips) ?: -1
+                if (ret == 0) {
+                    runOnUiThread {
+                        statusText.text = "多片段准备就绪 (${clips.size} 个片段)"
+                    }
+                } else {
+                    runOnUiThread {
+                        statusText.text = "多片段准备失败: $ret"
+                        isMultiClipMode = false
+                    }
+                }
+            }.start()
+
+        } catch (e: Exception) {
+            Log.e(TAG, "多片段播放失败", e)
+            statusText.text = "多片段播放失败: ${e.message}"
+            isMultiClipMode = false
+        }
+    }
+
+    /**
+     * 将 assets 文件复制到缓存目录（如果尚未复制）
+     */
+    private fun copyAssetToCache(assetName: String): String {
+        val cacheFile = File(cacheDir, assetName)
+        if (!cacheFile.exists() || cacheFile.length() == 0L) {
+            assets.open(assetName).use { input ->
+                FileOutputStream(cacheFile).use { output ->
+                    input.copyTo(output)
+                }
+            }
+        }
+        return cacheFile.absolutePath
+    }
+
+    /**
      * 切换视频源
      */
     private fun switchVideo(index: Int) {
+        isMultiClipMode = false
         Log.d(TAG, "切换视频: ${videoSources[index].name}")
         statusText.text = "切换视频中..."
 
@@ -455,17 +545,24 @@ class MainActivity : AppCompatActivity(), FFPlayer.Listener {
     }
 
     override fun onCompletion() {
-        Log.d(TAG, "onCompletion，自动重播")
+        Log.d(TAG, "onCompletion")
         runOnUiThread {
-            // 自动重播：重置播放器并重新开始播放
-            player?.let {
-                it.reset()
-                it.start()
-                playPauseButton.text = "暂停"
-                seekBar.progress = 0
-                currentTimeText.text = "00:00"
-                statusText.text = "自动重播中"
-                updateHandler.post(updateRunnable)
+            if (isMultiClipMode) {
+                // 多片段模式：播放完成后停止，不自动重播
+                playPauseButton.text = "播放"
+                updateHandler.removeCallbacks(updateRunnable)
+                statusText.text = "多片段播放完成"
+            } else {
+                // 单片段模式：自动重播
+                player?.let {
+                    it.reset()
+                    it.start()
+                    playPauseButton.text = "暂停"
+                    seekBar.progress = 0
+                    currentTimeText.text = "00:00"
+                    statusText.text = "自动重播中"
+                    updateHandler.post(updateRunnable)
+                }
             }
         }
     }

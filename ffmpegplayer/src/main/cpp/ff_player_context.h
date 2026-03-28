@@ -4,217 +4,144 @@
 #include <jni.h>
 #include <string>
 #include <mutex>
-#include <condition_variable>
-#include <thread>
 #include <atomic>
+#include <memory>
 #include <android/native_window.h>
 #include <android/native_window_jni.h>
-
-extern "C" {
-#include <libavformat/avformat.h>
-#include <libavcodec/avcodec.h>
-#include <libavcodec/bsf.h>
-#include <libavutil/avutil.h>
-#include <libavutil/time.h>
-}
 
 #include "ff_demuxer.h"
 #include "ff_video_decoder.h"
 #include "ff_audio_decoder.h"
 #include "ff_av_sync.h"
+#include "ff_packet_queue.h"
+#include "ff_player_callback.h"
+#include "ff_jni_callback.h"
+#include "ff_read_thread.h"
+#include "ff_video_render_loop.h"
+#include "ff_audio_render_loop.h"
 #include "effect_pipeline.h"
 #include "speed_effect.h"
+#include "ff_player_state.h"
+#include "ff_timeline.h"
+#include "ff_media_source.h"
 
 /**
- * Player State Enum
- */
-enum class FFPlayerState {
-    IDLE = 0,
-    PREPARING = 1,
-    PREPARED = 2,
-    PLAYING = 3,
-    PAUSED = 4,
-    STOPPED = 5,
-    COMPLETED = 6,
-    ERROR = 7
-};
-
-/**
- * FFPlayerContext - Player Core Context
+ * FFPlayerContext - 播放器核心协调者
  *
- * Complete playback flow:
- *   FFDemuxer(demux) --> FFVideoDecoder(MediaCodec H.264 HW decode → ANativeWindow)
- *                   --> FFAudioDecoder(FFmpeg SW decode → OpenSL ES playback)
- *                   --> FFAVSync(sync video frames based on audio clock)
+ * 职责（单一职责）：
+ *   1. 播放状态机管理
+ *   2. 子模块生命周期管理（创建/销毁）
+ *   3. 协调各模块之间的交互
+ *
+ * 统一使用 Timeline 模型：
+ *   - prepare(path) / prepareWithFd(fd) 会自动构建只有一个片段的 Timeline
+ *   - prepareTimeline(timeline) 直接使用多片段 Timeline
+ *   - start/stop/pause/resume/seek 等操作完全统一，无分支
+ *
+ * 具体的线程逻辑已拆分到独立模块：
+ *   - FFReadThread: 读取线程（解封装 + BSF + 分发 + 多片段切换）
+ *   - FFVideoRenderLoop: 视频线程（解码 + 同步 + 特效 + 渲染）
+ *   - FFAudioRenderLoop: 音频线程（解码 + 播放）
+ *   - FFPlayerCallback / FFJniCallback: 回调机制（解耦 JNI）
+ *   - FFPacketQueue: 线程安全包队列（独立数据结构）
+ *   - FFMediaSource: 单片段媒体源封装（Demuxer + BSF + Decoder）
  */
 class FFPlayerContext {
 public:
     FFPlayerContext(JavaVM *javaVM, jobject javaPlayer);
-
     ~FFPlayerContext();
 
-    // Playback control
+    // ==================== 播放控制 ====================
     int prepare(const std::string &path);
-
     int prepareWithFd(int fd);
+    int prepareTimeline(const Timeline &timeline);
 
     void start();
-
     void pause();
-
     void resume();
-
     void stop();
-
     void seekTo(int64_t positionMs);
-
     void release();
+    void reset();
 
-    void reset(); // Reset player state for replay
-
-    // Set Surface
+    // ==================== Surface 管理 ====================
     void setSurface(JNIEnv *env, jobject surface);
 
-    // Info query
+    // ==================== 信息查询 ====================
     int64_t getDuration();
-
     int64_t getCurrentPosition();
-
     int getState();
-
     int getVideoWidth();
-
     int getVideoHeight();
 
-    // 特效控制
-    /** 设置播放速度 (0.25 ~ 4.0) */
+    // ==================== 特效控制 ====================
     void setSpeed(float speed);
-
-    /** 获取当前播放速度 */
     float getSpeed();
-
-    /** 获取特效管线（供高级用法） */
     EffectPipeline *getEffectPipeline() { return effectPipeline_; }
 
 private:
-    // Java VM and callback object
-    JavaVM *javaVM_ = nullptr;
-    jobject javaPlayer_ = nullptr;  // GlobalRef
+    // ==================== 回调 ====================
+    FFJniCallback *callback_ = nullptr;
 
-    // Sub-modules
-    FFDemuxer *demuxer_ = nullptr;
-    FFVideoDecoder *videoDecoder_ = nullptr;
-    FFAudioDecoder *audioDecoder_ = nullptr;
+    // ==================== 时间线（统一模型） ====================
+    Timeline timeline_;
+    // 原子指针：读取线程在片段切换时更新，渲染线程通过原子读取获取最新解码器
+    std::atomic<FFVideoDecoder *> videoDecoderPtr_{nullptr};
+    std::atomic<FFAudioDecoder *> audioDecoderPtr_{nullptr};
+    // 当前活跃的 MediaSource（由读取线程管理生命周期）
+    std::atomic<FFMediaSource *> currentSource_{nullptr};
+
+    // ==================== 共享子模块 ====================
     FFAVSync *avSync_ = nullptr;
 
     // 特效管线
     EffectPipeline *effectPipeline_ = nullptr;
-    std::shared_ptr<SpeedEffect> speedEffect_;  // 内置变速特效（快捷引用）
+    std::shared_ptr<SpeedEffect> speedEffect_;
 
-    // Worker threads
-    std::thread readThread_;
-    std::thread videoThread_;
-    std::thread audioThread_;
+    // ==================== 线程模块 ====================
+    FFReadThread readThread_;
+    FFVideoRenderLoop videoRenderLoop_;
+    FFAudioRenderLoop audioRenderLoop_;
 
-    // State control
+    // ==================== 包队列 ====================
+    FFPacketQueue videoQueue_;
+    FFPacketQueue audioQueue_;
+
+    // ==================== 状态控制 ====================
     std::atomic<FFPlayerState> state_{FFPlayerState::IDLE};
     std::atomic<bool> abortRequest_{false};
     std::atomic<bool> seekRequest_{false};
     std::atomic<int64_t> seekPositionUs_{0};
-    std::atomic<bool> seekDoneWhilePaused_{false}; // 暂停期间完成 seek，通知视频线程渲染一帧
-    std::atomic<int64_t> seekTargetUs_{-1}; // 精确 seek 目标时间，>= 0 表示需要丢弃 PTS < 此值的帧
+    std::atomic<bool> seekDoneWhilePaused_{false};
+    std::atomic<int64_t> seekTargetUs_{-1};
 
-    // Packet queue (simplified: using vector + mutex)
-    struct PacketQueue {
-        std::vector<AVPacket *> packets;
-        std::mutex mutex;
-        std::condition_variable cond;
-        std::atomic<bool> eof{false};
-        std::atomic<bool> aborted{false};
-        int maxSize = 128;
-
-        void push(AVPacket *pkt) {
-            std::unique_lock<std::mutex> lock(mutex);
-            while ((int) packets.size() >= maxSize && !aborted.load()) {
-                cond.wait_for(lock, std::chrono::milliseconds(10));
-            }
-            if (aborted.load()) {
-                av_packet_free(&pkt);
-                return;
-            }
-            packets.push_back(pkt);
-            cond.notify_one();
-        }
-
-        AVPacket *pop() {
-            std::unique_lock<std::mutex> lock(mutex);
-            // Wait until data available, EOF, or abort
-            while (packets.empty() && !eof.load() && !aborted.load()) {
-                cond.wait_for(lock, std::chrono::milliseconds(10));
-            }
-            if (packets.empty()) return nullptr;
-            AVPacket *pkt = packets.front();
-            packets.erase(packets.begin());
-            cond.notify_one();
-            return pkt;
-        }
-
-        void flush() {
-            std::lock_guard<std::mutex> lock(mutex);
-            for (auto *pkt: packets) {
-                av_packet_free(&pkt);
-            }
-            packets.clear();
-            eof.store(false);
-            aborted.store(false);
-            cond.notify_all();
-        }
-
-        int size() {
-            std::lock_guard<std::mutex> lock(mutex);
-            return (int) packets.size();
-        }
-
-        void abort() {
-            aborted.store(true);
-            eof.store(true);
-            cond.notify_all();
-        }
-    };
-
-    PacketQueue videoQueue_;
-    PacketQueue audioQueue_;
-
-    // Surface
+    // ==================== Surface ====================
     ANativeWindow *nativeWindow_ = nullptr;
     std::mutex surfaceMutex_;
 
-    // H.264/HEVC AVCC → AnnexB bitstream filter
-    AVBSFContext *bsfCtx_ = nullptr;
+    // ==================== 辅助方法 ====================
+    void releaseSubModules();
+    void initEffectPipeline();
 
-    // Thread functions
-    void readThreadFunc();
+    /**
+     * 内部统一的 prepare 实现
+     * 构建 Timeline 后设置状态为 PREPARED
+     */
+    int prepareInternal(const Timeline &timeline);
 
-    void videoThreadFunc();
+    /**
+     * 通过 Demuxer 探测源文件信息，构建单片段 Timeline
+     * @param path 文件路径（path 和 fd 二选一）
+     * @param fd 文件描述符（-1 表示使用 path）
+     * @return 构建好的 Timeline，失败时 empty() 为 true
+     */
+    Timeline buildSingleClipTimeline(const std::string &path, int fd = -1);
 
-    void audioThreadFunc();
-
-    // Java callbacks
-    void notifyPrepared();
-
-    void notifyCompletion();
-
-    void notifyError(int code, const std::string &msg);
-
-    void notifyProgress(int64_t currentMs, int64_t totalMs);
-
-    void notifyVideoSizeChanged(int width, int height);
-
-    void notifyStateChanged(int state);
-
-    JNIEnv *getJNIEnv();
-
-    void detachThread();
+    /**
+     * 片段切换回调（由读取线程调用）
+     * 更新原子解码器指针，使渲染线程能获取到新片段的解码器
+     */
+    void onClipSwitched(int clipIndex, FFMediaSource *source);
 };
 
 #endif // FFMPEG_PLAYER_FF_PLAYER_CONTEXT_H

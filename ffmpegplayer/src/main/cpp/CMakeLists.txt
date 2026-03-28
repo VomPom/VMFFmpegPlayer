@@ -56,10 +56,15 @@ set_target_properties(crypto PROPERTIES
 add_library(ffplayer SHARED
     ff_player_jni.cpp
     ff_player_context.cpp
+    ff_jni_callback.cpp
+    ff_read_thread.cpp
+    ff_video_render_loop.cpp
+    ff_audio_render_loop.cpp
     ff_demuxer.cpp
     ff_video_decoder.cpp
     ff_audio_decoder.cpp
     ff_av_sync.cpp
+    ff_media_source.cpp
     # lib_effect 特效框架源文件
     ${EFFECT_DIR}/effect_pipeline.cpp
     ${EFFECT_DIR}/speed_effect.cpp

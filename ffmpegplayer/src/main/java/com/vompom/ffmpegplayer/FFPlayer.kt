@@ -154,6 +154,75 @@ class FFPlayer {
     }
 
     /**
+     * 片段描述数据类
+     * 描述一个视频文件中的一段时间区间及其在时间线上的位置
+     *
+     * @param sourcePath 源文件路径
+     * @param srcStartMs 源文件裁剪起点（毫秒）
+     * @param srcEndMs 源文件裁剪终点（毫秒），0 表示到文件末尾
+     * @param timelineStartMs 在项目时间线上的起点（毫秒）
+     * @param timelineEndMs 在项目时间线上的终点（毫秒）
+     */
+    data class ClipInfo(
+        val sourcePath: String,
+        val srcStartMs: Long,
+        val srcEndMs: Long,
+        val timelineStartMs: Long,
+        val timelineEndMs: Long
+    )
+
+    /**
+     * 准备时间线播放（多片段串联）
+     *
+     * 使用示例：
+     * ```
+     * val clips = listOf(
+     *     FFPlayer.ClipInfo("/path/to/video1.mp4", 2000, 5000, 0, 3000),
+     *     FFPlayer.ClipInfo("/path/to/video2.mp4", 0, 4000, 3000, 7000)
+     * )
+     * player.prepareTimeline(clips)
+     * player.start()
+     * ```
+     *
+     * @param clips 片段列表，按时间线顺序排列
+     * @return 0 成功，负值失败
+     */
+    fun prepareTimeline(clips: List<ClipInfo>): Int {
+        if (!nativeLoaded) {
+            Log.e(TAG, "prepareTimeline 失败: native 库未加载")
+            return -1
+        }
+        if (clips.isEmpty()) {
+            Log.e(TAG, "prepareTimeline 失败: 片段列表为空")
+            return -1
+        }
+
+        // 将 ClipInfo 列表转换为 Object[][] 传递给 JNI
+        val clipArray = Array(clips.size) { i ->
+            val clip = clips[i]
+            arrayOf<Any>(
+                clip.sourcePath,
+                clip.srcStartMs,
+                clip.srcEndMs,
+                clip.timelineStartMs,
+                clip.timelineEndMs
+            )
+        }
+
+        Log.d(TAG, "prepareTimeline: ${clips.size} clips")
+        return nativePrepareTimeline(clipArray)
+    }
+
+    /**
+     * 异步准备时间线播放
+     */
+    fun prepareTimelineAsync(clips: List<ClipInfo>) {
+        Thread {
+            prepareTimeline(clips)
+        }.start()
+    }
+
+    /**
      * 异步准备（在后台线程执行 prepare）
      */
     fun prepareAsync() {
@@ -317,6 +386,7 @@ class FFPlayer {
     private external fun nativeInit()
     private external fun nativePrepare(path: String): Int
     private external fun nativePrepareWithFd(fd: Int): Int
+    private external fun nativePrepareTimeline(clips: Array<Array<Any>>): Int
     private external fun nativeStart()
     private external fun nativePause()
     private external fun nativeResume()

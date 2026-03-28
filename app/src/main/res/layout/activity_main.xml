@@ -139,6 +139,17 @@
                     android:textSize="14sp" />
             </LinearLayout>
 
+            <!-- 多片段播放演示按钮 -->
+            <Button
+                android:id="@+id/multiClipButton"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginTop="12dp"
+                android:background="@drawable/btn_control_bg"
+                android:text="▶ 多片段串联播放"
+                android:textColor="#ffffff"
+                android:textSize="14sp" />
+
             <!-- 变速控制区域 -->
             <LinearLayout
                 android:layout_width="match_parent"

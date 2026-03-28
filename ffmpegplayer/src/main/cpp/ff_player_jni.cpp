@@ -3,6 +3,7 @@
 #include <string>
 
 #include "ff_player_context.h"
+#include "ff_timeline.h"
 
 extern "C" {
 #include <libavformat/avformat.h>
@@ -139,27 +140,114 @@ static jfloat nativeGetSpeed(JNIEnv *env, jobject thiz) {
     return player ? player->getSpeed() : 1.0f;
 }
 
+/**
+ * 准备时间线播放（多片段串联）
+ *
+ * Java 层传入 ClipDescriptor 数组：
+ *   每个元素包含: sourcePath(String), srcStartMs(long), srcEndMs(long),
+ *                 timelineStartMs(long), timelineEndMs(long)
+ *
+ * JNI 签名: ([Ljava/lang/Object;)I
+ * 实际参数: ClipInfo[] 数组，每个 ClipInfo 是一个 Object[]:
+ *   [0] = sourcePath (String)
+ *   [1] = srcStartMs (Long)
+ *   [2] = srcEndMs (Long)
+ *   [3] = timelineStartMs (Long)
+ *   [4] = timelineEndMs (Long)
+ */
+static jint nativePrepareTimeline(JNIEnv *env, jobject thiz, jobjectArray clipArray) {
+    auto *player = getNativePlayer(env, thiz);
+    if (!player) return -1;
+
+    int clipCount = env->GetArrayLength(clipArray);
+    if (clipCount <= 0) {
+        LOGE("nativePrepareTimeline: empty clip array");
+        return -1;
+    }
+
+    Timeline timeline;
+    Track mainTrack;
+    mainTrack.trackId = 0;
+    mainTrack.zOrder = 0;
+
+    for (int i = 0; i < clipCount; i++) {
+        auto clipObj = (jobjectArray) env->GetObjectArrayElement(clipArray, i);
+        if (!clipObj || env->GetArrayLength(clipObj) < 5) {
+            LOGE("nativePrepareTimeline: invalid clip at index %d", i);
+            continue;
+        }
+
+        // 解析 sourcePath
+        auto jPath = (jstring) env->GetObjectArrayElement(clipObj, 0);
+        const char *pathStr = env->GetStringUTFChars(jPath, nullptr);
+        std::string sourcePath(pathStr);
+        env->ReleaseStringUTFChars(jPath, pathStr);
+        env->DeleteLocalRef(jPath);
+
+        // 解析时间参数（毫秒 → 微秒）
+        jclass longClass = env->FindClass("java/lang/Long");
+        jmethodID longValue = env->GetMethodID(longClass, "longValue", "()J");
+
+        jobject jSrcStart = env->GetObjectArrayElement(clipObj, 1);
+        jobject jSrcEnd = env->GetObjectArrayElement(clipObj, 2);
+        jobject jTlStart = env->GetObjectArrayElement(clipObj, 3);
+        jobject jTlEnd = env->GetObjectArrayElement(clipObj, 4);
+
+        int64_t srcStartMs = env->CallLongMethod(jSrcStart, longValue);
+        int64_t srcEndMs = env->CallLongMethod(jSrcEnd, longValue);
+        int64_t tlStartMs = env->CallLongMethod(jTlStart, longValue);
+        int64_t tlEndMs = env->CallLongMethod(jTlEnd, longValue);
+
+        env->DeleteLocalRef(jSrcStart);
+        env->DeleteLocalRef(jSrcEnd);
+        env->DeleteLocalRef(jTlStart);
+        env->DeleteLocalRef(jTlEnd);
+        env->DeleteLocalRef(longClass);
+        env->DeleteLocalRef(clipObj);
+
+        ClipDescriptor clip;
+        clip.sourcePath = sourcePath;
+        clip.srcStartUs = srcStartMs * 1000;
+        clip.srcEndUs = srcEndMs * 1000;
+        clip.timelineStartUs = tlStartMs * 1000;
+        clip.timelineEndUs = tlEndMs * 1000;
+
+        mainTrack.clips.push_back(clip);
+
+        LOGD("Clip %d: src=%s, srcRange=[%lld,%lld]ms, tlRange=[%lld,%lld]ms",
+             i, sourcePath.c_str(),
+             (long long) srcStartMs, (long long) srcEndMs,
+             (long long) tlStartMs, (long long) tlEndMs);
+    }
+
+    timeline.tracks.push_back(mainTrack);
+    timeline.updateDuration();
+
+    return player->prepareTimeline(timeline);
+}
+
 // ==================== 动态注册 ====================
 
 static const JNINativeMethod g_methods[] = {
-        {"nativeInit",               "()V",                       (void *) nativeInit},
-        {"nativePrepare",            "(Ljava/lang/String;)I",     (void *) nativePrepare},
-        {"nativePrepareWithFd",      "(I)I",                      (void *) nativePrepareWithFd},
-        {"nativeStart",              "()V",                       (void *) nativeStart},
-        {"nativePause",              "()V",                       (void *) nativePause},
-        {"nativeResume",             "()V",                       (void *) nativeResume},
-        {"nativeStop",               "()V",                       (void *) nativeStop},
-        {"nativeSeekTo",             "(J)V",                      (void *) nativeSeekTo},
-        {"nativeRelease",            "()V",                       (void *) nativeRelease},
-        {"nativeReset",              "()V",                       (void *) nativeReset},
-        {"nativeSetSurface",         "(Landroid/view/Surface;)V", (void *) nativeSetSurface},
-        {"nativeGetDuration",        "()J",                       (void *) nativeGetDuration},
-        {"nativeGetCurrentPosition", "()J",                       (void *) nativeGetCurrentPosition},
-        {"nativeGetState",           "()I",                       (void *) nativeGetState},
-        {"nativeGetVideoWidth",      "()I",                       (void *) nativeGetVideoWidth},
-        {"nativeGetVideoHeight",     "()I",                       (void *) nativeGetVideoHeight},
-        {"nativeSetSpeed",           "(F)V",                      (void *) nativeSetSpeed},
-        {"nativeGetSpeed",           "()F",                       (void *) nativeGetSpeed},
+        {"nativeInit",               "()V",                                    (void *) nativeInit},
+        {"nativePrepare",            "(Ljava/lang/String;)I",                  (void *) nativePrepare},
+        {"nativePrepareWithFd",      "(I)I",                                   (void *) nativePrepareWithFd},
+        {"nativePrepareTimeline",    "([[Ljava/lang/Object;)I",                (void *) nativePrepareTimeline},
+        {"nativeStart",              "()V",                                    (void *) nativeStart},
+        {"nativePause",              "()V",                                    (void *) nativePause},
+        {"nativeResume",             "()V",                                    (void *) nativeResume},
+        {"nativeStop",               "()V",                                    (void *) nativeStop},
+        {"nativeSeekTo",             "(J)V",                                   (void *) nativeSeekTo},
+        {"nativeRelease",            "()V",                                    (void *) nativeRelease},
+        {"nativeReset",              "()V",                                    (void *) nativeReset},
+        {"nativeSetSurface",         "(Landroid/view/Surface;)V",              (void *) nativeSetSurface},
+        {"nativeGetDuration",        "()J",                                    (void *) nativeGetDuration},
+        {"nativeGetCurrentPosition", "()J",                                    (void *) nativeGetCurrentPosition},
+        {"nativeGetState",           "()I",                                    (void *) nativeGetState},
+        {"nativeGetVideoWidth",      "()I",                                    (void *) nativeGetVideoWidth},
+        {"nativeGetVideoHeight",     "()I",                                    (void *) nativeGetVideoHeight},
+        {"nativeSetSpeed",           "(F)V",                                   (void *) nativeSetSpeed},
+        {"nativeGetSpeed",           "()F",                                    (void *) nativeGetSpeed},
 };
 
 /**
